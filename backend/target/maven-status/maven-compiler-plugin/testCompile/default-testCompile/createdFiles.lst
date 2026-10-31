@@ -1,7 +1,0 @@
-com/yilian/clothing/integration/IntegrationTestSupport$Api.class
-com/yilian/clothing/integration/IntegrationTestSupport.class
-com/yilian/clothing/domain/service/BarcodeParserTest.class
-com/yilian/clothing/domain/service/PricingServiceTest.class
-com/yilian/clothing/integration/ConcurrencyIT.class
-com/yilian/clothing/integration/PermissionIT.class
-com/yilian/clothing/domain/service/StockMatrixBuilderTest.class
