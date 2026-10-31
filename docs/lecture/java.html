@@ -1,0 +1,1247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Java 后端深度讲义 · 衣恋服装店扫码出入库系统</title>
+<link rel="stylesheet" href="lecture.css">
+</head>
+<body>
+
+<!-- ================= 封面 ================= -->
+<div class="cover">
+  <div class="kicker">深 度 讲 义 · J A V A 版</div>
+  <h1>从 76 条需求<br>到一个能扛住两个人同时扫码的后端</h1>
+  <h2>Spring Boot 3.3 · Java 21 · DDD 四层<br>
+      21,000 字级代码溯源 · 每章固定三层递进</h2>
+  <div class="meta">
+    <div><b>工程路径</b>　D:\!javaproject\clothing</div>
+    <div><b>业务真源</b>　衣恋-76题需求答卷（76 题，云南临沧「衣恋时尚女装」）</div>
+    <div><b>规模</b>　main 98 类 / 8,610 行；测试 6 类 / 644 行；29 张表；48 条 API path</div>
+    <div><b>验收</b>　mvn test → Tests run: 27, Failures: 0, Errors: 0 → BUILD SUCCESS</div>
+  </div>
+  <div class="stamp">本讲义中出现的每一段代码都来自上述路径的真实文件；每一个数字都来自真实执行输出。</div>
+</div>
+
+<!-- ================= 目录 ================= -->
+<div class="toc">
+  <h2>阅读路线</h2>
+  <ol>
+    <li>需求怎么变成架构<span>76 题 → 4 层 → 29 张表，翻译过程而非结论</span></li>
+    <li>四层的职责与依赖方向<span>为什么 domain 里一个 Spring 注解都没有</span></li>
+    <li>唯一改库存出口<span>行锁、原子算术、InnoDB 里到底发生了什么</span></li>
+    <li>两个人同时扫码不覆盖<span>三层防御 + 一次真实的 500 事故复盘</span></li>
+    <li>金额为什么必须精确到分<span>分域残差求解：从 1 分误差到整数解</span></li>
+    <li>矩阵视图与业务排序<span>为什么行序不能交给 SQL 的 ORDER BY</span></li>
+    <li>字段级权限的三层防御<span>403 而不是 0，SQL 里根本不 SELECT</span></li>
+    <li>@Transactional 的四个边界陷阱<span>SAVEPOINT、自调用、只读事务、锁持有时间</span></li>
+    <li>消息不丢：事务性发件箱<span>SKIP LOCKED 抢占、指数退避、协议兼容</span></li>
+    <li>断网还能卖货<span>逐条裁决：为什么绝不能整批回滚</span></li>
+    <li>测试是在测什么<span>27 项用例的证据链设计</span></li>
+    <li>面试速查 20 问<span>一眼能答出来的版本</span></li>
+  </ol>
+  <div class="note" style="margin-top:8mm">
+    <b>怎么读</b>：每章都是同一个骨架 —— <b>骨架职责</b>（它在系统里站哪个位置）→ <b>语法逐行</b>（这段代码每个符号为什么这么写）→
+    <b>底层机制</b>（往下钻到 InnoDB / JVM / 协议层）。章末固定三块：
+    <span class="tag">技术本质总结</span><span class="tag">架构师视角</span><span class="tag">面试追问与应答</span>。
+  </div>
+</div>
+
+<!-- ================= 第 1 章 ================= -->
+<section class="chapter">
+  <h2>第 1 章　需求怎么变成架构</h2>
+  <p class="lede">76 条需求不是 76 个功能点。真实的翻译动作是：找出**少数几条会决定架构形状**的需求，其余全部挂到它们身上。</p>
+
+  <h3>1.1 先做减法：76 题里只有 3 题改架构</h3>
+  <p>把答卷通读一遍，绝大多数条目是"要有什么字段""界面要显示什么"——这些是工作量，不是结构。真正会**逼出架构**的是下面三条：</p>
+
+  <table>
+    <tr><th>题号</th><th>原话（摘要）</th><th>它逼出了什么</th></tr>
+    <tr><td>Q76</td><td>"两个人一起扫码，库存不能互相覆盖"</td><td>唯一的库存写入口 + 行锁 + 原子算术 + 幂等令牌（第 3、4 章）</td></tr>
+    <tr><td>Q23</td><td>"断网了也要能扫，网来了自动同步"</td><td>客户端队列 + 服务端逐条裁决 + 设备序号（第 10 章）</td></tr>
+    <tr><td>Q68</td><td>"店员不能看进价和利润"</td><td>字段级权限三层防御，最里层是 SQL 不查（第 7 章）</td></tr>
+  </table>
+  <p>还有两条隐性的：<b>Q49"按实际成交价记录，手工输入实收"</b>决定了整套金额口径（第 5 章），
+  <b>Q52"款式×尺码为行、颜色为列"</b>决定了透视必须在应用层做（第 6 章）。其余 71 条，都是在这五个决定之上铺开的功能。</p>
+
+  <h3>1.2 再定边界：哪些**不做**</h3>
+  <p>Q73 明确说"不要线上卖货、会员积分、财务对账"。这句话的价值不是省了三个模块，而是**让每次想加缓存/加搜索/加推荐的时候都有理由拒绝**。
+  工程上有个反直觉的规律：能清楚说出"不做什么"的项目，才可能准时交付。</p>
+
+  <h3>1.3 最后定形状：四层是怎么被"逼"出来的</h3>
+  <p>不是先有 DDD 再往上套，而是三条约束各自要一个位置：</p>
+  <ul>
+    <li><b>库存只能有一条写路径</b>（Q76）→ 需要一个不依赖 Web、不依赖 SQL 的"领域服务"，于是有了 <code>domain/service/StockDomainService</code>。</li>
+    <li><b>同一段业务要能被 HTTP、定时任务、MQ 消费三种入口调用</b> → 需要一个不含协议的"用例层"，于是有了 <code>application/service/*AppService</code>。</li>
+    <li><b>换 MySQL 驱动、换 Redis 客户端不该动业务代码</b> → 需要 Port/Adapter，于是有了 <code>domain/repository/*</code>（接口）+ <code>infrastructure/persistence/*Impl</code>（实现）。</li>
+  </ul>
+  <p>剩下的 <code>interfaces/</code> 只做一件事：把 HTTP 的字符串、query、header 翻译成 Java 对象，再把结果翻译成 JSON。它**不该有 if 判断业务**——
+  一旦 Controller 里出现"如果库存不足就……"，第 3 章那套唯一入口就破了。</p>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>架构不是"分层的美学"，而是**约束的物化**。每一条硬约束（只能有一个写入口、必须能离线、权限必须挡在数据层）
+    都会在代码里留下一个不可绕过的位置；找不到这个位置，约束就只是文档上的一句话。</p>
+    <p>判断一个项目是不是"真分层"，最快的办法：在领域层 <code>grep -r "org.springframework" domain/</code>。
+    如果搜得到，那它只是"按包名分了文件夹"。</p>
+  </div>
+
+  <div class="box arch">
+    <h5>【架构师视角】</h5>
+    <p>写需求文档的人关心"能不能"，写架构的人要回答"错了会怎样"。同样是"两个人同时扫码"，产品会说"要支持并发"，
+    架构师要追问三件事：<b>并发的是同一件货还是同一款货？</b>（决定锁粒度）、<b>重复提交算不算一次？</b>（决定幂等键）、
+    <b>算错一件的代价是什么？</b>（决定要不要上 Redis 闸门）。这三问的答案直接落到第 3、4 章的三层防御上。</p>
+    <p>另一个判断：<b>能不能一周内跑起来</b>（Q75）。这条限制了"炫技预算"——不引 Kafka、不引 ES、不上微服务，
+    一个 MySQL + 一个 Redis + 一个 RabbitMQ 就是上限。约束越紧，设计反而越干净。</p>
+  </div>
+
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q">为什么用 DDD 四层，而不是 MVC 三层？</p>
+    <p class="a">MVC 三层里，业务逻辑通常落在 Service，而 Service 天然依赖 Web 上下文（要拿 request、要拼 DTO）。结果是业务逻辑没法被定时任务和 MQ 复用，也很难单测。
+    DDD 四层把"用例编排"（application）和"业务规则"（domain）分开：domain 只依赖 Java 标准库，所以 <code>PricingService</code> 的 7 个测试
+    不需要 Spring 容器，1 秒内跑完。这不是洁癖——1 秒的测试会被天天跑，30 秒的测试三天就没人跑了。</p>
+    <p class="q">这个项目真的需要 DDD 吗？只有 3 个店员用。</p>
+    <p class="a">用户规模小，但**业务规则的复杂度不小**：折扣分摊、退货负金额、调拨双流水、盘点调账、离线补录，
+    这五条路径都要改库存和记流水，任何一条写歪账就永远对不平。复杂度在"规则"而不在"并发量"，所以分层是值得的。
+    反过来说，如果这是个纯 CRUD 的 CMS，四层就是过度设计。</p>
+    <p class="q">怎么证明分层没白分？</p>
+    <p class="a">三个可验证的现象：① 单测不需要容器（19 项领域测试）；② 同一段业务被 HTTP 和 MQ 两处复用
+    （<code>StockDomainService.move</code> 被销售、入库、退货、调拨、盘点、离线补录六个用例调用）；
+    ③ 换存储只改 <code>infrastructure</code>——<code>ReportRepositoryImpl</code> 从 JPA 改成 JdbcTemplate 时，
+    上层一行没动。</p>
+  </div>
+</section>
+
+<!-- ================= 第 2 章 ================= -->
+<section class="chapter">
+  <h2>第 2 章　四层的职责与依赖方向</h2>
+  <p class="lede">这一章只回答一个问题：一段新代码应该放在哪一层？放错一次，依赖方向就再也回不来了。</p>
+
+  <h3>2.1 骨架：谁依赖谁</h3>
+  <figure>
+    <svg viewBox="0 0 680 400" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+          <path d="M0,0 L9,4.5 L0,9 z" fill="#8a929c"/>
+        </marker>
+      </defs>
+      <rect x="40" y="20" width="600" height="62" rx="6" fill="#f4f6f8" stroke="#cfd5dc"/>
+      <text x="56" y="44" font-size="13" font-weight="700" fill="#1e2227">interfaces　接口层</text>
+      <text x="56" y="66" font-size="11" fill="#5a6472">11 个 Controller · Result 信封 · GlobalExceptionHandler（只做协议转换）</text>
+
+      <rect x="40" y="104" width="600" height="62" rx="6" fill="#fdf8ef" stroke="#e3d3b3"/>
+      <text x="56" y="128" font-size="13" font-weight="700" fill="#1e2227">application　应用层</text>
+      <text x="56" y="150" font-size="11" fill="#5a6472">15 个 AppService · @Transactional 在这里 · 一个方法 = 一个用例 = 一个事务</text>
+
+      <rect x="40" y="188" width="600" height="86" rx="6" fill="#f2f8f7" stroke="#bcd9d5"/>
+      <text x="56" y="212" font-size="13" font-weight="700" fill="#1e2227">domain　领域层（纯 Java，零框架）</text>
+      <text x="56" y="234" font-size="11" fill="#5a6472">StockDomainService · PricingService · StockMatrixBuilder · BarcodeParser</text>
+      <text x="56" y="256" font-size="11" fill="#5a6472">25 个 model + 9 个 repository 接口（Port）+ StockAvailabilityPort</text>
+
+      <rect x="40" y="296" width="600" height="80" rx="6" fill="#f6f7f9" stroke="#cfd5dc"/>
+      <text x="56" y="320" font-size="13" font-weight="700" fill="#1e2227">infrastructure　基础设施层</text>
+      <text x="56" y="342" font-size="11" fill="#5a6472">9 个 RepositoryImpl · StockGate(Redis) · Outbox(RabbitMQ) · JWT/权限 · DemoSeeder</text>
+      <text x="56" y="362" font-size="11" fill="#5a6472">唯一允许出现 java.sql / RedisTemplate / RabbitTemplate 的包</text>
+
+      <line x1="340" y1="82" x2="340" y2="100" stroke="#8a929c" stroke-width="1.4" marker-end="url(#ar)"/>
+      <line x1="340" y1="166" x2="340" y2="184" stroke="#8a929c" stroke-width="1.4" marker-end="url(#ar)"/>
+      <line x1="150" y1="274" x2="150" y2="292" stroke="#8a929c" stroke-width="1.4" marker-end="url(#ar)" stroke-dasharray="4 3"/>
+      <text x="160" y="289" font-size="10" fill="#8a929c">依赖倒置：domain 定义接口，infra 实现</text>
+    </svg>
+    <figcaption>依赖方向严格向下。虚线是唯一一处"反向"依赖，用端口 + 适配器实现，见 2.4。</figcaption>
+  </figure>
+
+  <h3>2.2 语法逐行：一个"位置正确"的调用链</h3>
+  <p>以"扫一件加入购物车"为例，看四个层各自说了什么话：</p>
+
+  <pre><code><span class="cmt">// ① interfaces：只翻译，不做判断</span>
+<span class="kw">@PostMapping</span>("/orders/{orderNo}/items")
+<span class="kw">@RequirePermission</span>(Permission.SALE_WRITE)
+<span class="kw">public</span> Result&lt;AddResult&gt; addItem(<span class="kw">@PathVariable</span> String orderNo,
+                              <span class="kw">@RequestBody</span> AddItemCmd cmd) {
+    <span class="kw">return</span> Result.ok(saleAppService.addItem(orderNo, cmd.barcode(), cmd.qty(),
+            cmd.scanToken(), cmd.force(), cmd.reason()));
+}
+
+<span class="cmt">// ② application：编排事务，不写业务规则</span>
+<span class="kw">@Transactional</span>
+<span class="kw">public</span> AddResult addItem(String orderNo, String barcode, <span class="kw">int</span> qty,
+                         String scanToken, <span class="kw">boolean</span> force, String reason) {
+    Operator op = requireOperator();               <span class="cmt">// 当前人来自 AuthContext(ThreadLocal)</span>
+    ...
+    StockFlow flow = stockDomainService.move(...);  <span class="cmt">// 交给领域层去改库存</span>
+    saleRepository.upsertItem(...);                 <span class="cmt">// 交给仓储去落库</span>
+}
+
+<span class="cmt">// ③ domain：只认业务事实，不认识 HTTP 也不认识 SQL</span>
+<span class="kw">public</span> StockFlow move(MoveCmd cmd) {
+    Stock stock = lockOrCreate(cmd.sku().id(), cmd.warehouseId());
+    <span class="kw">if</span> (!cmd.allowNegative() &amp;&amp; !stock.enough(cmd.qty())) { <span class="kw">throw</span> ... }
+    <span class="kw">int</span> before = stock.deduct(cmd.qty());
+    stockRepository.update(stock);
+    ...
+}
+
+<span class="cmt">// ④ infrastructure：只认 SQL 与驱动</span>
+<span class="kw">public</span> Optional&lt;Stock&gt; lockForUpdate(<span class="kw">long</span> skuId, <span class="kw">long</span> warehouseId) {
+    <span class="kw">return</span> jdbc.queryForObject(SQL_LOCK, Map.of("s", skuId, "w", warehouseId), STOCK_MAPPER);
+}</code></pre>
+
+  <p>注意第 ③ 层的问题：它<b>要拿行锁</b>，而"行锁"是数据库概念。领域层怎么能在不认识数据库的前提下要求加锁？
+  这正是第 2.4 节要处理的地方。</p>
+
+  <h3>2.3 底层机制：Spring 是怎么把四层"连"起来的</h3>
+  <p>四层之间没有手写工厂，全靠容器注入。关键在于 <b>Bean 的生命周期只有一次</b>：</p>
+  <ol>
+    <li>启动时扫描 <code>@Component/@Service/@Repository</code>，生成 BeanDefinition；</li>
+    <li>按构造器参数解析依赖，形成一张有向图（本项目是单例，无循环依赖问题）；</li>
+    <li>对标注了 <code>@Transactional</code> 的 Bean 生成 <b>CGLIB 代理</b>——这一步决定了第 8 章所有陷阱；</li>
+    <li>请求进来先过 <code>JwtAuthFilter</code>（Servlet Filter）→ <code>PermissionInterceptor</code>（HandlerInterceptor）→ Controller。</li>
+  </ol>
+  <p>第 3 步是理解事务的关键：调用方拿到的不是 <code>SaleAppService</code> 实例本身，而是一个子类代理。
+  代理在方法前后加了"开事务 / 提交或回滚"。所以<b>同一个类内部的方法互相调用不走代理</b>，事务注解会静默失效。</p>
+
+  <h3>2.4 依赖倒置：领域层要"通知"，但不能认识 Redis</h3>
+  <p>真实缺陷是这样暴露的：入库 10 件之后，店员扫码仍提示"仅剩 0 件"。原因是 Redis 里的可售余量没被更新。
+  修法看起来很简单——在入库、退货、调拨、盘点、冲正五个地方各加一行 <code>redis.set(...)</code>。但这会：
+  ① 让 <code>application</code> 层认识 Redis；② 五条路径漏一条就复发（后来确实漏了）。</p>
+  <p>于是定义了一个端口，把"库存变了要通知谁"这件事抽象掉：</p>
+
+  <pre><code><span class="cmt">// domain/port/StockAvailabilityPort.java —— 领域层只声明"我需要被通知"</span>
+<span class="kw">public interface</span> StockAvailabilityPort {
+    <span class="kw">void</span> refresh(<span class="kw">long</span> warehouseId, <span class="kw">long</span> skuId, <span class="kw">int</span> quantity);
+    StockAvailabilityPort NOOP = (w, s, q) -&gt; { };   <span class="cmt">// 单测用的空实现</span>
+}
+
+<span class="cmt">// infrastructure/cache/StockGateAdapter.java —— 适配器负责"怎么通知"</span>
+<span class="kw">@Component</span>
+<span class="kw">public class</span> StockGateAdapter <span class="kw">implements</span> StockAvailabilityPort {
+    <span class="kw">private final</span> StockGate gate;
+    <span class="kw">public void</span> refresh(<span class="kw">long</span> w, <span class="kw">long</span> s, <span class="kw">int</span> q) {
+        gate.reset(w, s, q);            <span class="cmt">// 内部已 try-catch，fail-open</span>
+    }
+}
+
+<span class="cmt">// domain/service/StockDomainService.java —— 唯一出口里调一次，五条路径全覆盖</span>
+availability.refresh(cmd.warehouseId(), cmd.sku().id(), flow.afterQty());</code></pre>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>依赖倒置的判据不是"有没有 interface"，而是<b>接口的所有权在哪一侧</b>。如果接口定义在 infrastructure（比如叫 <code>RedisCacheService</code>），
+    那领域层依赖的还是"缓存"这个概念，只是换了个名字；只有当接口定义在 domain 且用<b>业务语言</b>命名（<code>StockAvailability</code> 而不是 <code>RedisWriter</code>），
+    依赖才真正倒过来了。</p>
+    <p>这个名字的差别不是文字游戏：<code>StockAvailabilityPort</code> 的实现可以是 Redis、可以是本地 Caffeine、也可以是 NOOP，
+    而 <code>RedisWriter</code> 的实现只能是 Redis。前者让领域层可以对测试隐形，后者不行。</p>
+  </div>
+
+  <div class="box arch">
+    <h5>【架构师视角】</h5>
+    <p>"漏一条路径"是分层项目里最常见的 bug 类型，也是最难测的：它不会让任何单测变红，只会在某个店员补货后扫码时冒出来。
+    对抗它的办法不是加 Code Review，而是<b>把动作收敛到唯一出口</b>——<code>move()</code> 和 <code>resetTo()</code> 两个方法覆盖了
+    全部 6 个改库存用例，于是"回写闸门"只需要写两行，且永远不会漏。</p>
+    <p>推广一句：<b>凡是"每条路径都要做一次"的动作，都应该被下沉到唯一出口</b>（记流水、刷缓存、发消息、审计日志，全是这一类）。</p>
+  </div>
+
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q">Port/Adapter 和普通的 Service 接口有什么区别？</p>
+    <p class="a">普通 Service 接口通常是"实现可能有多个"的预留（比如 <code>PayService</code> 有微信/支付宝两个实现），
+    接口跟着实现走；Port 是"领域需要什么"的声明，接口跟着领域走，实现是被动适配的。判断方法：<b>删掉所有实现类，接口还成立吗？</b>
+    <code>StockAvailabilityPort</code> 成立（NOOP 就是合法实现）；<code>RedisWriter</code> 删掉实现就什么都不剩。</p>
+    <p class="q">为什么不用 Spring 事件（ApplicationEvent）解耦？</p>
+    <p class="a">可以用，而且更 Spring 风格。但默认的 <code>@EventListener</code> 是<b>同步</b>的，语义上等价于直接调用，
+    只是把依赖变成了隐式的（发布者不知道谁在监听，排查时找不到调用方）。而这里需要的是"库存变化后必须回写闸门"的<b>强制约束</b>，
+    显式调用比隐式事件更不容易漏。真要用事件，也得用 <code>@TransactionalEventListener(phase = AFTER_COMMIT)</code>，
+    否则事务回滚了事件却发出去了。</p>
+    <p class="q">如果以后要加"库存变化发短信通知"，加在哪？</p>
+    <p class="a">不加在 <code>move()</code> 里。短信是外部副作用，必须走事务性发件箱（第 9 章）：<code>move()</code> 只写一条 outbox 记录，
+    由 <code>OutboxDispatcher</code> 异步发。这样短信网关挂了不会拖垮收银，队列里的消息也不会因为事务回滚而"发了但没卖"。</p>
+  </div>
+</section>
+
+<!-- ================= 第 3 章 ================= -->
+<section class="chapter">
+  <h2>第 3 章　唯一改库存出口</h2>
+  <p class="lede">整个系统的正确性压在一个方法上：<code>StockDomainService.move()</code>。这一章把它拆到 SQL 与 InnoDB 层。</p>
+
+  <h3>3.1 骨架职责</h3>
+  <p>系统里有 6 条业务路径会改变 <code>inv_sku_stock.quantity</code>：销售出库、入库、退货、调拨（出+入）、盘点调账、离线补录。
+  如果每条路径各写一句 <code>UPDATE inv_sku_stock SET quantity = ?</code>，那么：</p>
+  <ul>
+    <li>流水与库存可能不同步（有人忘了写流水）；</li>
+    <li>并发下必然丢失更新（有人读了旧值再写回）；</li>
+    <li>缓存回写会漏（有人忘了通知 Redis）。</li>
+  </ul>
+  <p>所以这个类的定位不是"工具类"，而是<b>不变量守卫</b>：库存变了就一定有流水、一定有正确的 before/after、一定回写缓存。</p>
+
+  <h3>3.2 语法逐行</h3>
+  <pre><code><span class="kw">public</span> StockFlow move(MoveCmd cmd) {
+    <span class="cmt">// ① 拿行锁（或首次建行）。这一行决定了并发语义，见 3.3</span>
+    Stock stock = lockOrCreate(cmd.sku().id(), cmd.warehouseId());
+
+    <span class="kw">int</span> before;
+    <span class="kw">if</span> (cmd.direction() &lt; 0) {
+        <span class="cmt">// ② Q47：不足时把"还剩几件"带回前端，由人决定，而不是直接拒绝</span>
+        <span class="kw">if</span> (!cmd.allowNegative() &amp;&amp; !stock.enough(cmd.qty())) {
+            <span class="kw">throw</span> BizException.of(ResultCode.STOCK_SHORTAGE)
+                    .with("remainQty", stock.available())
+                    .with("skuId", cmd.sku().id());
+        }
+        before = stock.deduct(cmd.qty());     <span class="cmt">// ③ 领域对象内部算 before/after</span>
+    } <span class="kw">else</span> {
+        before = stock.restore(cmd.qty());
+    }
+    stockRepository.update(stock);             <span class="cmt">// ④ 落库：SET quantity = quantity ± ?</span>
+
+    <span class="cmt">// ⑤ 库存与流水必须同事务：库存动了流水没写，等于账本缺页，永远对不平</span>
+    StockFlow flow = appendFlow(cmd, before, stock.quantity());
+
+    <span class="cmt">// ⑥ 唯一出口里回写闸门，6 条业务路径自动全覆盖</span>
+    availability.refresh(cmd.warehouseId(), cmd.sku().id(), flow.afterQty());
+    <span class="kw">return</span> flow;
+}</code></pre>
+
+  <p>逐点解释几个"不明显但必须这么写"的地方：</p>
+  <ul>
+    <li><b>为什么 <code>direction</code> 要显式传，不从 <code>FlowType</code> 推断？</b>因为冲正的方向取决于原单：冲正一笔入库是"减"，
+    冲正一笔出库是"加"。如果从类型推（IN 就加），冲正入库会变成再加一次。这种 bug 在盘点调账时最致命。</li>
+    <li><b>为什么 <code>before</code> 在对象里算，不在 SQL 里用 <code>LAST_INSERT_ID</code> 之类技巧？</b>因为流水要记 <code>before_qty</code> 和 <code>after_qty</code>
+    两个值用于对账；在锁内算出来的 <code>before</code> 与 <code>after</code> 一定自洽（<code>after − before = ±qty</code>），可以在测试里当不变量断言。</li>
+    <li><b>为什么 <code>appendFlow</code> 拆成独立方法？</b>为了让"改库存"和"记账本"在代码上可见地分成两步，方便在评审时追问"这两个是不是一个事务"。</li>
+  </ul>
+
+  <h3>3.3 底层机制：<code>SELECT … FOR UPDATE</code> 到底锁了什么</h3>
+  <p>这是本章最重要的一节。很多人以为"加了 FOR UPDATE 就安全了"，但 InnoDB 的锁行为取决于<b>索引</b>和<b>隔离级别</b>：</p>
+
+  <table>
+    <tr><th>场景</th><th>InnoDB 实际行为</th><th>后果</th></tr>
+    <tr><td><code>WHERE sku_id=? AND warehouse_id=?</code> 命中唯一索引</td><td>只锁这一行（记录锁 Record Lock）</td><td>✅ 并发只排队同一 SKU，不同 SKU 互不影响</td></tr>
+    <tr><td>同样的查询但**没有** <code>uk_sku_warehouse</code> 唯一索引</td><td>无索引可用 → 全表扫描 → 锁住扫描到的每一行（临键锁 Next-Key Lock）</td><td>❌ 一个店员扫码，全店收银排队</td></tr>
+    <tr><td>查询条件走范围（<code>quantity &lt; 10</code>）</td><td>间隙锁（Gap Lock），锁住区间不让插入</td><td>⚠️ 可能出现"锁住了不存在的行"，插入新品时被阻塞</td></tr>
+    <tr><td>RR 隔离级别下的普通 <code>SELECT</code></td><td>走事务开始时的<b>快照</b>（MVCC）</td><td>❌ 看不见别的线程刚提交的行 —— 第 4 章那个 500 的根因</td></tr>
+  </table>
+
+  <p>所以 <code>uk_sku_warehouse</code> 这个唯一索引不是"顺手加的约束"，它是<b>锁粒度的开关</b>。这也是面试里最常见的追问：
+  "你的行锁为什么没有锁全表？"——答案是唯一索引。</p>
+
+  <h4>为什么还要 <code>quantity = quantity - ?</code></h4>
+  <p>即使拿了行锁，如果写回用的是 Java 里算好的值（<code>SET quantity = 8</code>），仍有隐患：任何人绕过 <code>move()</code> 直接读-改-写，
+  丢失更新立刻回来，而且测试很难发现（因为正常路径不会触发）。改成原子算术后，正确性<b>附着在 SQL 语义上</b>，
+  而不是附着在"大家都记得走这个服务"这种纪律上：</p>
+  <pre><code><span class="cmt">-- infrastructure/persistence/StockRepositoryImpl.java</span>
+<span class="kw">UPDATE</span> inv_sku_stock <span class="kw">SET</span> quantity = quantity - :delta, update_time = <span class="kw">NOW</span>(3)
+ <span class="kw">WHERE</span> sku_id = :skuId <span class="kw">AND</span> warehouse_id = :warehouseId</code></pre>
+  <p>这一句在 MySQL 里是<b>原子</b>的：读到的是当前已提交的最新值（当前读），不需要额外加锁也不会丢更新。
+  <code>FOR UPDATE</code> 的作用因此变成"让 before/after 的计算与写入在同一个临界区里"，而不是"防止丢更新"。</p>
+
+  <h4><code>lockOrCreate</code>：第一次卖新品时行还不存在</h4>
+  <pre><code><span class="kw">private</span> Stock lockOrCreate(<span class="kw">long</span> skuId, <span class="kw">long</span> warehouseId) {
+    <span class="kw">return</span> stockRepository.lockForUpdate(skuId, warehouseId)
+            .orElseGet(() -&gt; {
+                <span class="cmt">// 并发建行靠唯一索引兜底：两个线程同时 insert，一个成功一个撞 1062</span>
+                stockRepository.insertIfAbsent(skuId, warehouseId, 0, 1);
+                <span class="kw">return</span> stockRepository.lockForUpdate(skuId, warehouseId)
+                        .orElseThrow(() -&gt; BizException.of(ResultCode.STOCK_ROW_MISSING));
+            });
+}</code></pre>
+  <p>这段代码有一个容易忽略的细节：<code>insertIfAbsent</code> 之后<b>必须重新加锁查询</b>，不能直接 <code>new Stock(...)</code>。
+  否则两个线程会各拿一份"自己以为的 0"，谁先提交谁赢，另一个覆盖——典型的"看起来加了锁其实没加"。</p>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>并发正确性等价于<b>"读-算-写"三步在同一个临界区里</b>。数据库提供两种临界区：悲观（<code>FOR UPDATE</code>，排队）和乐观（版本号，失败重试）。
+    本项目选悲观，理由是冲突概率高（同一爆款两个店员一起扫）且临界区极短（一条 UPDATE），悲观锁的排队成本远低于乐观锁的重试成本。</p>
+    <p>另一句话：<b>锁的粒度由索引决定，不由 SQL 文字决定</b>。<code>WHERE sku_id=? AND warehouse_id=?</code> 配上唯一索引是行锁，
+    配不上就是表锁——同一个 SQL 文本，两种命运。</p>
+  </div>
+
+  <div class="box arch">
+    <h5>【架构师视角】</h5>
+    <p>把 <code>move()</code> 做成唯一出口，本质上是给系统加了一个<b>可审计的收窄点</b>。之后所有关于库存的追问都可以落到这一处：
+    "库存会不会变成负数？"——看 <code>allowNegative</code>；"流水会不会缺？"——看 <code>appendFlow</code> 是否在同一个事务；
+    "缓存会不会脏？"——看 <code>availability.refresh</code> 是否每路都过。如果没有这个收窄点，每个问题都要去 6 个地方找答案。</p>
+    <p>代价也有：<code>move()</code> 成了热点方法，任何改动都影响全部路径。所以它的参数用 record + <code>withXxx</code> 不可变复制
+    （<code>MoveCmd</code>），加字段时不破坏既有调用方——这是<b>给热点 API 留演进空间</b>的常见手法。</p>
+  </div>
+
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q"><code>FOR UPDATE</code> 和 <code>UPDATE ... SET quantity = quantity - 1</code> 有什么区别？都要吗？</p>
+    <p class="a">两者解决不同问题。原子算术保证"不丢更新"（不需要锁），<code>FOR UPDATE</code> 保证"我要读的那个值在算 before/after 期间不会被别人改掉"。
+    本项目既记流水又要在不足时返回 <code>remainQty</code>，必须读到确定的 before 值，所以两者都要。
+    如果业务只关心最终值（比如纯计数器），只写原子算术就够了。</p>
+    <p class="q">为什么不用乐观锁（version 字段）？</p>
+    <p class="a">乐观锁在冲突时抛异常让上层重试，而扫码是"店员在柜台前等结果"的交互——重试意味着延迟和不确定。更麻烦的是重试要重算折扣、
+    重建购物车行，把幂等逻辑翻倍。悲观锁在这里更简单：排队几十毫秒，用户感知不到。</p>
+    <p class="q">行锁会不会死锁？</p>
+    <p class="a">会。经典场景是调拨：事务 A 锁 SKU 3 再锁 SKU 5，事务 B 锁 5 再锁 3，成环。所以 <code>lockAllSorted()</code> 按 skuId 升序加锁，
+    把环消灭在发生之前。这类 bug 单 SKU 测试永远测不出来，必须有多 SKU 用例——本项目在调拨与退货路径上都有。</p>
+    <p class="q">如果 MySQL 换成 PostgreSQL，这段代码要改吗？</p>
+    <p class="a">语义不变，语法不变（<code>FOR UPDATE</code> 通用）。但 PG 默认 READ COMMITTED，第 4 章那个"快照看不见并发提交"的问题会自然消失——
+    这说明那个 bug 是 RR 特有的，不是逻辑错误。<b>知道 bug 依赖哪个前提，比修掉 bug 更重要</b>，否则换个库又得重新踩。</p>
+  </div>
+</section>
+
+<!-- ================= 第 4 章 ================= -->
+<section class="chapter">
+  <h2>第 4 章　两个人同时扫码不覆盖</h2>
+  <p class="lede">Q76 是全卷唯一直接点名"并发"的需求。这一章给出三层防御，以及一次真实的、把 11 个请求打成 500 的事故复盘。</p>
+
+  <h3>4.1 骨架：三层各管一件事</h3>
+  <table>
+    <tr><th>层</th><th>组件</th><th>它负责</th><th>它不负责</th></tr>
+    <tr><td>1</td><td>唯一索引 <code>uk_scan_token</code> + 回执表</td><td>"这次扫码是不是重复提交"</td><td>不判断库存够不够</td></tr>
+    <tr><td>2</td><td>Redis 闸门（Lua 原子预扣）</td><td>"明显不够就别进数据库了"</td><td><b>不承担正确性</b>，挂了就放行</td></tr>
+    <tr><td>3</td><td>行锁 + 原子算术（第 3 章）</td><td>库存终值一定对</td><td>不判断是不是重复请求</td></tr>
+  </table>
+  <p>顺序不能换：先判重（最便宜，一次索引查）→ 再挡量（一次 Redis 往返）→ 最后进数据库（最贵）。每一步只做自己那件事，
+  这样任何一层挂掉，上一层仍能兜住正确性。</p>
+
+  <h3>4.2 时序：两个店员同时扫最后一件事</h3>
+  <figure>
+    <svg viewBox="0 0 680 430" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="a2" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 z" fill="#5a6472"/>
+        </marker>
+      </defs>
+      <g font-size="10" fill="#5a6472">
+        <text x="46" y="16">店员 A</text><text x="196" y="16">店员 B</text>
+        <text x="330" y="16">Spring 事务 / DB</text><text x="512" y="16">Redis 闸门</text>
+      </g>
+      <line x1="60" y1="24" x2="60" y2="410" stroke="#cfd5dc" stroke-dasharray="3 3"/>
+      <line x1="210" y1="24" x2="210" y2="410" stroke="#cfd5dc" stroke-dasharray="3 3"/>
+      <line x1="380" y1="24" x2="380" y2="410" stroke="#cfd5dc" stroke-dasharray="3 3"/>
+      <line x1="540" y1="24" x2="540" y2="410" stroke="#cfd5dc" stroke-dasharray="3 3"/>
+
+      <line x1="60" y1="50" x2="370" y2="50" stroke="#5a6472" marker-end="url(#a2)"/>
+      <text x="70" y="44" font-size="9.5">POST items (token=t1)</text>
+      <line x1="210" y1="72" x2="370" y2="72" stroke="#5a6472" marker-end="url(#a2)"/>
+      <text x="220" y="66" font-size="9.5">POST items (token=t2)</text>
+
+      <line x1="380" y1="96" x2="530" y2="96" stroke="#2f6f6a" marker-end="url(#a2)"/>
+      <text x="392" y="90" font-size="9.5" fill="#2f6f6a">DECRBY 1 → 0（放行）</text>
+      <line x1="380" y1="118" x2="530" y2="118" stroke="#b4453a" marker-end="url(#a2)"/>
+      <text x="392" y="112" font-size="9.5" fill="#b4453a">DECRBY 1 → 不足，返回 0</text>
+
+      <rect x="300" y="134" width="160" height="150" rx="4" fill="#f2f8f7" stroke="#bcd9d5"/>
+      <text x="310" y="152" font-size="9.5" fill="#2f6f6a">A: SELECT … FOR UPDATE</text>
+      <text x="310" y="170" font-size="9.5" fill="#2f6f6a">A: UPDATE quantity=quantity-1</text>
+      <text x="310" y="188" font-size="9.5" fill="#2f6f6a">A: INSERT 流水(token=t1)</text>
+      <text x="310" y="206" font-size="9.5" fill="#2f6f6a">A: COMMIT（释放行锁）</text>
+      <text x="310" y="230" font-size="9.5" fill="#96690f">B: 回查 DB：真值 0 &lt; 1</text>
+      <text x="310" y="248" font-size="9.5" fill="#96690f">B: 抛 409 + remainQty=0</text>
+      <text x="310" y="266" font-size="9.5" fill="#96690f">B: 事务回滚，闸门 refund</text>
+
+      <line x1="370" y1="300" x2="70" y2="300" stroke="#2f6f6a" marker-end="url(#a2)"/>
+      <text x="120" y="294" font-size="9.5" fill="#2f6f6a">200 {duplicated:false, afterQty:0}</text>
+      <line x1="370" y1="322" x2="220" y2="322" stroke="#b4453a" marker-end="url(#a2)"/>
+      <text x="240" y="316" font-size="9.5" fill="#b4453a">409 code=1001 remainQty=0</text>
+
+      <text x="60" y="356" font-size="9.5" fill="#4b5563">同 token 重放（网络抖动导致客户端重发）</text>
+      <line x1="60" y1="372" x2="370" y2="372" stroke="#8a929c" marker-end="url(#a2)" stroke-dasharray="4 3"/>
+      <text x="80" y="366" font-size="9.5" fill="#8a929c">POST items (token=t1 第二次)</text>
+      <text x="300" y="390" font-size="9.5" fill="#8a929c">命中 uk_scan_token → 回放首单，不再扣减</text>
+    </svg>
+    <figcaption>闸门先挡掉"明显不够"的请求；真正决定对错的是第 3 层行锁与唯一索引。</figcaption>
+  </figure>
+
+  <h3>4.3 事故复盘：为什么 12 个同令牌请求里有 11 个 500</h3>
+  <p>先看测试想测什么：模拟客户端网络抖动，同一个扫码请求被重发 12 次，期望"只扣 1 件，其余返回首次结果"。
+  第一次跑的结果是 <b>1 成功 + 11 个 500</b>。日志里是这样的：</p>
+  <pre><code>IntegrityError (1062): Duplicate entry 'tk-7f3a...' for key 'inv_stock_flow.uk_scan_token'</code></pre>
+
+  <p>当时的代码是"先查后插"：</p>
+  <pre><code>var replayed = flowRepository.findByScanToken(scanToken);   <span class="cmt">// 第 1 层预查</span>
+<span class="kw">if</span> (replayed.isPresent()) { <span class="kw">return</span> replay(replayed.get()); }   <span class="cmt">// 命中就回放</span>
+... <span class="cmt">// 12 个线程同时走到这里，全都查不到</span>
+stockDomainService.move(...);        <span class="cmt">// 12 个都去扣库存</span>
+<span class="cmt">// 唯一索引只放行 1 个 INSERT，其余 11 个抛 DuplicateKeyException → 全局处理器 → 500</span></code></pre>
+
+  <p><b>根因有两层</b>，第二层才是真正难发现的：</p>
+  <ol>
+    <li><b>并发窗口</b>：预查和插入之间没有互斥，唯一索引只保证"不会插入两条"，不保证"插入失败时给人一个合理答复"。</li>
+    <li><b>快照读陷阱</b>：改成"撞了就回查首单"之后，<b>还是失败</b>——回查用的是普通 <code>SELECT</code>，
+    在 REPEATABLE READ 下走的是本事务开始时的快照，而首单是<b>别的事务刚提交</b>的，快照里根本看不见。
+    现象非常诡异：唯一索引说"已存在"，查询说"不存在"。</li>
+  </ol>
+
+  <p>最终修法分两步，缺一不可：</p>
+  <pre><code><span class="cmt">// ① 用 SAVEPOINT 把"扣库存+写流水"包起来：撞车只回滚这一段，</span>
+<span class="cmt">//    本请求的事务还能继续用来回放首单（否则整个事务已标记 rollback-only）</span>
+Object savepoint = TransactionAspectSupport.currentTransactionStatus().createSavepoint();
+<span class="kw">try</span> {
+    flow = stockDomainService.move(...);
+    saleRepository.upsertItem(...);
+} <span class="kw">catch</span> (DuplicateKeyException dup) {
+    TransactionAspectSupport.currentTransactionStatus().rollbackToSavepoint(savepoint);
+    stockGate.refund(order.warehouseId(), sku.id(), qty);      <span class="cmt">// Redis 预扣不会自己回滚</span>
+    StockFlow first = flowRepository.findByScanTokenCurrent(scanToken)   <span class="cmt">// ② 当前读</span>
+            .orElseThrow(() -&gt; dup);
+    <span class="kw">return</span> replayOf(first);      <span class="cmt">// 幂等语义：这不是错误，是正常形态</span>
+}</code></pre>
+
+  <p><code>findByScanTokenCurrent</code> 的实现就是在 SQL 尾部加 <code>FOR SHARE</code>：</p>
+  <pre><code><span class="cmt">-- 当前读：跳过 MVCC 快照，直接看已提交的最新版本（并加共享锁防止被改）</span>
+<span class="kw">SELECT</span> ... <span class="kw">FROM</span> inv_stock_flow <span class="kw">WHERE</span> scan_token = :token <span class="kw">FOR SHARE</span></code></pre>
+  <p>这就是第 3.3 节表格最后一行的实战意义：<b>RR 隔离级别下，普通 SELECT 看不见并发事务刚提交的行</b>。
+  这个知识点几乎所有八股文都会提，但只有真的写到"撞唯一索引之后要回查"的代码时，才会被咬一口。</p>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>幂等的实现不是"加个 if 判断重复"，而是<b>把重复提交变成正常返回</b>。判断幂等的标准是：同一个令牌调用 N 次，业务效果等于 1 次，
+    且<b>N 次都返回可用的结果</b>（而不是 N−1 次报错）。所以幂等必须配合"回执"——要么回放首次的流水，要么返回首次的快照。</p>
+    <p>而幂等键的选择决定了幂等的边界：用 <code>scanToken</code> 是"这一次扫码"，用 <code>orderNo + skuId</code> 就变成"这一单里这件货的总量"，
+    两者语义完全不同。本项目两者都有（前者防重发，后者防重复计数 Q41/Q50）。</p>
+  </div>
+
+  <div class="box arch">
+    <h5>【架构师视角】</h5>
+    <p>三层防御看起来"过度设计"，其实每一层对应一种不同的失败模式：唯一索引防<b>重复提交</b>，闸门防<b>热点争抢</b>，行锁防<b>丢失更新</b>。
+    把三者混成一层（比如"全部靠 Redis 计数"）会立刻出问题：Redis 不可持久、不可对账，一旦重启或过期，库存就飘了。</p>
+    <p>更重要的是<b>降级方向的选择</b>。闸门是 fail-open（Redis 挂了继续做生意，退化成纯 DB 行锁），因为"算错"在这里不会发生（DB 兜底），
+    而"做不了生意"是店主无法接受的。反过来，如果闸门是 fail-close，Redis 就成了单点——一个小 Redis 挂了整店停业，这在 3 个店员的小店里是灾难。</p>
+  </div>
+
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q">为什么不用分布式锁（Redisson）解决并发扫码？</p>
+    <p class="a">可以用，但没必要，而且更脆弱。分布式锁要处理锁超时、续期、脑裂，出问题时排查成本极高；
+    而数据库行锁本来就是"单点内的分布式锁"，语义更强（事务回滚自动释放），已经是现成的。加 Redis 锁等于把正确性外包给一个更弱的组件。</p>
+    <p class="q">如果两个人扫的是同一款不同尺码，会互相阻塞吗？</p>
+    <p class="a">不会，因为锁的粒度是 <code>(sku_id, warehouse_id)</code>，不同 SKU 是不同行。但如果索引没建对（见 3.3 表），
+    就会退化成表级临键锁——这就是为什么"加锁"和"加对索引"必须一起讨论。</p>
+    <p class="q">SAVEPOINT 和"整个方法重试一次"哪个好？</p>
+    <p class="a">SAVEPOINT 更好，因为重试要重新走一遍业务编排（重新校验单据状态、重新算价），而且重试本身可能又撞车，形成重试风暴。
+    SAVEPOINT 只回滚"扣库存+写流水"这几条语句，代价最小。但要注意：<b>回滚到 SAVEPOINT 后，被回滚的 INSERT 已经消耗了自增值</b>，
+    所以流水号会出现空洞——这是可接受的（业务号由 <code>BizNoGenerator</code> 另行生成，不依赖自增）。</p>
+    <p class="q">12 个并发请求里，为什么恰好是 1 个成功？</p>
+    <p class="a">因为唯一索引保证"同一个 token 只有一行"。11 个失败者不是"运气不好"，而是<b>必然</b>：
+    它们都想插入同一行。真正要设计的不是"减少失败者"，而是"让失败者拿到合理答复"——这就是回放首单的价值。</p>
+  </div>
+</section>
+
+<!-- ================= 第 5 章 ================= -->
+<section class="chapter">
+  <h2>第 5 章　金额为什么必须精确到分</h2>
+  <p class="lede">这一章是全套讲义里唯一有数学的一章。它从一个真实的 1 分钱误差出发，走到"整数分域求解"。</p>
+
+  <h3>5.1 骨架：三条金额口径</h3>
+  <p>Q49 允许"实收金额手工输入"，这就产生了三个不同的数，必须各归其位：</p>
+  <table>
+    <tr><th>概念</th><th>定义</th><th>存在哪</th></tr>
+    <tr><td>吊牌合计</td><td><code>Σ 吊牌单价 × 件数</code></td><td>明细行的 <code>tag_price</code> 快照</td></tr>
+    <tr><td>实收</td><td>店员输入（可能抹零、可能打折）</td><td><code>biz_sale_order.received_amount</code></td></tr>
+    <tr><td>毛利</td><td><b>实收</b> − 成本（不是吊牌 − 成本）</td><td>报表实时算</td></tr>
+  </table>
+  <p>为了让账本能自证，出库流水 <code>sale_price</code> 记的是<b>这一行的吊牌金额</b>（不是单价），结账时再补一条
+  <code>PRICE_ADJUST</code> 流水（<code>qty=0</code>，金额 = 实收 − 吊牌合计）。于是有了一个可以写进测试的恒等式：</p>
+  <pre><code><span class="cmt">-- 报表营业额 = 实收，永远成立（flow_type: 2=出库 7=退货 8=价格调整）</span>
+<span class="kw">SELECT</span> <span class="kw">SUM</span>(sale_price) <span class="kw">FROM</span> inv_stock_flow <span class="kw">WHERE</span> flow_type <span class="kw">IN</span> (2, 7, 8)</code></pre>
+  <p>为什么不用"直接在出库流水上改金额"？因为流水是只追加的账本（Q7：替代纸质本子）。改金额等于涂改账本，冲正和审计都做不了。</p>
+
+  <h3>5.2 事故：折扣分摊之后，明细加起来不等于实收</h3>
+  <p>第一版实现很"标准"：按行金额占比分摊折扣，然后<b>把行实付金额除以件数得到单价</b>，四舍五入到分。测试立刻炸了：</p>
+  <pre><code>actual_total 389.70 vs 399.68 − 9.99 = 389.69     <span class="cmt">// 差 1 分</span></code></pre>
+  <p>数字是这样出来的：某行实付 38.97 元、2 件 → 单价 19.485 → 四舍五入 <b>19.49</b> → 回算 <code>19.49 × 2 = 38.98</code>，多了 1 分。
+  这不是"精度不够"，而是<b>信息丢失</b>：明细只存两位小数的单价，一个奇数分金额在"单价×件数"的世界里根本无法精确表示。</p>
+
+  <h3>5.3 解法：先行军级精确，再在整数分域里求解</h3>
+  <p><b>第一层：行级精确。</b>前 n−1 行按占比摊折扣，最后一行吃掉余额，保证 <code>Σ 行实付 = 实收</code>：</p>
+  <pre><code>BigDecimal allocated = ZERO;
+<span class="kw">for</span> (<span class="kw">int</span> i = 0; i &lt; n; i++) {
+    <span class="kw">if</span> (i == n - 1) lineDiscount = discount.subtract(allocated);   <span class="cmt">// 末行吃余额</span>
+    <span class="kw">else</span> lineDiscount = discount.multiply(lineTag).divide(tagTotal, 2, HALF_UP);
+    BigDecimal lineActual = lineTag.subtract(lineDiscount);
+    units[i] = lineActual.divide(BigDecimal.valueOf(Math.max(qty, 1)), 2, HALF_UP);  <span class="cmt">// 单价，两位小数</span>
+}</code></pre>
+  <p>但单价被砍到分之后，<code>Σ 单价×件数</code> 又与 <code>Σ 行实付</code> 差了若干分。于是<b>第二层</b>：把这差当作方程来解。</p>
+
+  <h4>数学：为什么"逐行调 1 分"解决不了所有情况</h4>
+  <p>设第 i 行件数 q<sub>i</sub>、单价 u<sub>i</sub>（分）、需要补的差额 r（分）。给第 i 行单价加 1 分，行金额变化 <b>q<sub>i</sub></b> 分。
+  所以能凑出的差额集合是 <code>{ Σ k<sub>i</sub>·q<sub>i</sub> }</code>，其中 k<sub>i</sub> 是整数（可正可负）。</p>
+  <p>例如 q = [2, 2, 2]，r = 1：无论怎么调，行金额只能变 2 分、4 分、6 分……<b>永远凑不出 1 分</b>。
+  这时数学告诉我们：方程 <code>Σ k<sub>i</sub>·q<sub>i</sub> = r</code> 有解的充要条件是 <code>gcd(q<sub>1</sub>,…,q<sub>n</sub>) | r</code>。
+  全是 2 件时 gcd=2，r=1 无解——<b>这不是代码 bug，是这个表示法根本表达不了</b>。</p>
+  <p>于是算法分三级：</p>
+  <ol>
+    <li><b>整数除尽</b>：<code>|r| ≥ q<sub>i</sub></code> 时直接给第 i 行调 <code>r/q<sub>i</sub></code> 分（按件数少的优先，最不容易把单价调歪）；</li>
+    <li><b>两行互质搭配</b>：<code>k·q<sub>i</sub> − m·q<sub>j</sub> = r</code>，小范围枚举 k,m（≤4），覆盖 gcd=1 的各种组合，
+    比如 q=[3,2] 时 <code>1×3 − 1×2 = 1</code>；</li>
+    <li><b>无解就报残差</b>：把仍凑不出的分数通过 <code>residualCents[0]</code> 返回，落日志，绝不静默吞掉。</li>
+  </ol>
+  <pre><code><span class="kw">private static int</span> solveResidual(BigDecimal target, BigDecimal[] units, <span class="kw">int</span>[] qty, <span class="kw">int</span>[] changes) {
+    <span class="kw">int</span> rest = cents(target) - cents(currentSum(units, qty));   <span class="cmt">// 转"分"的整数域，之后只做整数加减</span>
+    <span class="kw">if</span> (rest == 0) <span class="kw">return</span> 0;
+    Integer[] order = sortedByQtyAsc(qty);      <span class="cmt">// 件数少的行优先</span>
+    <span class="kw">while</span> (rest != 0) {
+        <span class="kw">boolean</span> moved = <span class="kw">false</span>;
+        <span class="kw">for</span> (<span class="kw">int</span> i : order) {
+            <span class="kw">int</span> q = qty[i];
+            <span class="kw">if</span> (q &lt;= 0 || Math.abs(rest) &lt; q) <span class="kw">continue</span>;
+            <span class="kw">int</span> k = rest / q;
+            changes[i] += k; rest -= k * q; moved = <span class="kw">true</span>;
+        }
+        <span class="kw">if</span> (moved) <span class="kw">continue</span>;
+        <span class="kw">int</span>[] pair = solvePair(rest, qty, order);   <span class="cmt">// k·q_i − m·q_j = rest</span>
+        <span class="kw">if</span> (pair == null) <span class="kw">break</span>;                   <span class="cmt">// 无解：把 rest 交回调用方</span>
+        changes[pair[0]] += pair[2]; changes[pair[1]] -= pair[3]; rest = 0;
+    }
+    <span class="kw">return</span> rest;
+}</code></pre>
+
+  <h4>为什么不直接用 <code>BigDecimal</code> 高精度算完再存？</h4>
+  <p>因为数据库里的 <code>DECIMAL(10,2)</code> 只有两位小数，这是财务系统的硬约束（也是纸质小票的现实）。
+  把 19.485 存进去会被截断成 19.48 或 19.49，误差不是"计算误差"而是"存储表示误差"。
+  真正能表达"2 件 38.97 元"的表示法只有两种：① 存行金额而不是单价；② 允许单价有更多小数位。本项目选了 ①+②的折中——
+  行金额是权威（报表用它），单价只是展示（能精确到分就精确，不能就报残差）。</p>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>浮点/定点误差的本质不是"精度不够"，而是<b>表示法的表达能力不足</b>。判断方法：把约束写成方程，看解集是否为空。
+    <code>gcd</code> 判别法就是这件事的严格版本——它能在写代码之前告诉你"这个问题有解还是无解"。</p>
+    <p>工程上的对策是三层：<b>能精确就精确</b>（整数分域运算）→ <b>不能精确就报出来</b>（残差返回 + 落日志）→ <b>绝不静默四舍五入</b>。
+    第三条最重要：静默的 1 分会变成"月底对账差 37 块"的悬案。</p>
+  </div>
+
+  <div class="box arch">
+    <h5>【架构师视角】</h5>
+    <p>金额口径必须<b>只有一个定义处</b>。本项目所有金额相关计算都在 <code>PricingService</code>（一个无状态的领域服务），
+    报表、小票、导出全部调它。如果让报表 SQL 自己写 <code>SUM(sale_price)</code>、让小票自己写 <code>tag*qty</code>，
+    两处口径迟早会分叉，而分叉的那天就是"报表和账本对不上"的那天。</p>
+    <p>另外，<b>"实收"是一个人工输入值，不是算出来的值</b>，这一点必须在数据模型上体现：它存在单头，而不是由明细推导。
+    否则抹零这件事永远表达不出来（抹掉的 3 毛钱在明细里没有归属）。</p>
+  </div>
+
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q">为什么不用 <code>double</code>？</p>
+    <p class="a"><code>double</code> 是二进制浮点，0.1 无法精确表示，累加会积累误差；而且 <code>0.1+0.2 != 0.3</code> 这种比较会随机失败。
+    财务计算一律 <code>BigDecimal</code> + <code>DECIMAL</code> 列，而且必须显式指定舍入模式（<code>HALF_UP</code>），
+    因为 <code>BigDecimal.divide</code> 不指定精度会抛 <code>ArithmeticException</code>。</p>
+    <p class="q">折扣为什么按金额占比摊，而不是按件数摊？</p>
+    <p class="a">按件数摊会让便宜货承担和贵货一样的折扣，导致某行"实付低于成本"，毛利为负——店主看到会以为系统算错了。
+    按金额占比摊时，每行的折扣率一致，符合"打 9 折"的直觉。代码里对应 <code>discount.multiply(lineTag).divide(tagTotal)</code>。</p>
+    <p class="q">残差报出来之后谁来处理？</p>
+    <p class="a">目前是落 WARN 日志（<code>logger.warn("折扣分摊残差 {} 分"…)</code>），因为无解情形只在"多行且件数全为偶数"这种极小概率下出现，
+    且金额极小（1 分）。如果在真实账务系统里，应该把它转成"待调整项"进对账流程。关键是<b>有出口</b>，而不是静默吞掉。</p>
+    <p class="q">退货为什么用负金额，而不是负数量？</p>
+    <p class="a">因为数量是"业务量"，带符号的是 <code>signed_qty</code>。报表 <code>SUM(sale_price)</code> 要求退货自动抵减营业额，
+    所以金额必须为负；而库存方向由 <code>direction</code> 决定（退货是 +1）。把两件事分开，才能同时满足"营业额抵减"和"库存回补"。</p>
+  </div>
+</section>
+
+<!-- ================= 第 6 章 ================= -->
+<section class="chapter">
+  <h2>第 6 章　矩阵视图与业务排序</h2>
+  <p class="lede">Q52 一句话："款式×尺码为行、颜色为列。"这句话背后藏着一个排序陷阱，它让 6 个测试同时变红。</p>
+
+  <h3>6.1 骨架：为什么透视放应用层</h3>
+  <p>SQL 也能做透视，标准写法是条件聚合：</p>
+  <pre><code><span class="kw">SELECT</span> spu_no, size,
+       <span class="kw">MAX</span>(<span class="kw">CASE WHEN</span> color=<span class="str">'黑'</span> <span class="kw">THEN</span> quantity <span class="kw">END</span>) <span class="kw">AS</span> 黑,
+       <span class="kw">MAX</span>(<span class="kw">CASE WHEN</span> color=<span class="str">'白'</span> <span class="kw">THEN</span> quantity <span class="kw">END</span>) <span class="kw">AS</span> 白,
+       ...
+<span class="kw">FROM</span> inv_stock_flow <span class="kw">GROUP BY</span> spu_no, size</code></pre>
+  <p>问题在省略号：<b>颜色是开放集合</b>。女装的"雾霾蓝""燕麦色""奶咖"是季节性的，一年能冒十几个。每加一个颜色就要改 SQL、改 DTO、改前端表头，
+  而且列数在编译期未知（JDBC 结果集是按列名取的）。</p>
+  <p>所以 SQL 只取长表（一行 = 一个 SKU 的库存），透视在 <code>StockMatrixBuilder</code> 里做，复杂度 O(n)，n≈200，耗时 &lt;1ms。
+  附加好处：同一份长表还能喂给导出、预警、离线预热快照——一次查询，三处使用。</p>
+
+  <h3>6.2 事故：行序错乱，"L 排到了 M 前面"</h3>
+  <p>第一版把行序完全交给 SQL：<code>ORDER BY spu_no, FIELD(size,'S','M','L','XL')</code>。上线前写了一个单测直接喂无序列表给 <code>build()</code>，
+  结果 6 个用例全红——因为<b>测试里没有 SQL</b>，它看到的是乱序输入。</p>
+  <p>这个失败暴露的是设计问题，不是测试问题：<b>领域层把正确性外包给了 SQL</b>。只要有人改仓储（多加一个 join、换个索引提示），
+  顺序就漂了，而前端表头和表体是按行序对齐渲染的——漂一次就是"尺码对错行"，店员会把 L 的库存看成 M 的。</p>
+  <p>修法：领域层自己排序，且排序规则用<b>业务序</b>而不是字典序：</p>
+  <pre><code><span class="kw">public static</span> Comparator&lt;String&gt; sizeOrder() {
+    List&lt;String&gt; std = List.of(<span class="str">"XS"</span>,<span class="str">"S"</span>,<span class="str">"M"</span>,<span class="str">"L"</span>,<span class="str">"XL"</span>,<span class="str">"XXL"</span>,<span class="str">"XXXL"</span>);
+    <span class="kw">return</span> Comparator.comparingInt((String s) -&gt; {
+        <span class="kw">int</span> idx = std.indexOf(s.toUpperCase());
+        <span class="kw">return</span> idx &lt; 0 ? 99 : idx;         <span class="cmt">// 未知码（"均码""F"）排最后</span>
+    }).thenComparing(Comparator.naturalOrder());   <span class="cmt">// 同权重按字母，保证稳定</span>
+}</code></pre>
+  <p>字典序下 <code>"L" &lt; "M" &lt; "S" &lt; "XL"</code>——完全不是店员认的顺序。业务序必须显式编码，这是"领域知识进代码"的典型例子。</p>
+
+  <h3>6.3 颜色列：按总库存降序</h3>
+  <pre><code>Map&lt;String,Integer&gt; colorQty = <span class="kw">new</span> LinkedHashMap&lt;&gt;();
+<span class="kw">for</span> (StockMatrixRow r : ordered) colorQty.merge(r.color(), r.quantity(), Integer::sum);
+
+List&lt;String&gt; colors = colorQty.entrySet().stream()
+        .sorted(Map.Entry.&lt;String,Integer&gt;comparingByValue().reversed()
+                .thenComparing(Map.Entry.comparingByKey()))   <span class="cmt">// 同量按名称，输出稳定</span>
+        .map(Map.Entry::getKey).toList();</code></pre>
+  <p>两个细节：① <code>thenComparing</code> 不是可选的——同量时若不按名称兜底，两次请求的列序可能不同，前端会"抖"；
+  ② 用 <code>LinkedHashMap</code> 而不是 <code>HashMap</code>，因为后者在颜色多时顺序随机（且不同 JVM 版本不同）。</p>
+
+  <h3>6.4 cells 只存非零格</h3>
+  <pre><code><span class="kw">if</span> (r.quantity() != 0) {                       <span class="cmt">// 零格不进 cells</span>
+    acc.cells.merge(r.color(), r.quantity(), Integer::sum);
+    acc.total += r.quantity();
+}</code></pre>
+  <p>Q53 说"库存 0 或偏少不需要标色"，但这里不只是不标色：零格<b>根本不出现</b>在矩阵里。前端渲染时缺失即 0，
+  这样即使某天颜色数涨到 20、行数涨到 60，报文也只有真实有货的格子，体积可控。这就是"传输层做减法"的思路。</p>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>排序是<b>业务语义</b>，不是数据库能力。凡是"顺序有含义"的列表（尺码、门店等级、审批状态），都应该在领域层用显式权重表达，
+    而不是依赖 <code>ORDER BY FIELD()</code>、依赖主键顺序、依赖插入顺序。判据很简单：<b>把数据搬到另一个存储（缓存、文件、内存），顺序还对吗？</b></p>
+    <p>另一个本质：<b>透视是"行列互换"，属于展示逻辑</b>。它不该污染查询层的 SQL，因为 SQL 的输出是"数据"，
+    而行列是"表达"。一旦把展示逻辑塞进 SQL，着色、排序、合并单元格这些需求都会跟着进 SQL。</p>
+  </div>
+
+  <div class="box arch">
+    <h5>【架构师视角】</h5>
+    <p>这个决定带来一个可量化的收益：矩阵接口的 SQL 变成了一句"无 ORDER BY 的普通查询"，可以被缓存、可以被各种索引优化、
+    可以在只读从库上跑。如果透视在 SQL 里，缓存键就要包含颜色集合，缓存命中率会随季节换色而崩。</p>
+    <p>缓存本身用的是<b>代际号</b>（<code>stock:gen</code> INCR）而不是逐个 key 删除：库存一变就 <code>gen++</code>，
+    旧缓存自然失效，不需要扫描删除。这个方法在第 7 章的小店规模下有个副作用——`INCR` 是全局的，任何 SKU 变动会让所有缓存失效，
+    命中率下降。但对 3 个店员、200 行的数据量来说，这个代价远小于"扫描删除 key"的复杂度。</p>
+  </div>
+
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q">如果库存表有 10 万行，还能在应用层透视吗？</p>
+    <p class="a">要看"一次取多少"。矩阵是按门店+筛选条件取的，10 万行是全部历史，实际查询只返回当前店的在库 SKU（几千行以内）。
+    如果真的一次要 10 万行，应该在 SQL 里先做聚合（按 spu+size+color 汇总），把行数降到透视所需的最小集合，再在应用层做行列转换。
+    换句话说：<b>聚合可以下推，行列转换不该下推</b>。</p>
+    <p class="q">为什么不用前端透视？后端只返回长表？</p>
+    <p class="a">可以让前端做，但有两个代价：① 手机端（Q14）算力有限，200 行×20 列的行列转换在低端安卓上会卡；
+    ② 排序规则要在前端再实现一遍，两端就得同步维护"业务序"。放在后端，前端只负责画格子。</p>
+    <p class="q">cells 用 Map 而不是数组，前端怎么知道哪列是哪色？</p>
+    <p class="a">报文里同时给了 <code>colors</code>（有序数组）和 <code>colorTotals</code>。前端用 <code>colors</code> 生成表头，
+    用 <code>row.cells[color]</code> 取值，缺失即 0。这样后端不需要为每行补齐空列，报文最小。</p>
+  </div>
+</section>
+
+<!-- ================= 第 7 章 ================= -->
+<section class="chapter">
+  <h2>第 7 章　字段级权限的三层防御</h2>
+  <p class="lede">Q68："店员不能看进价和利润。" 这句话的技术难点不在"挡"，而在"挡得住还不影响体验"。</p>
+
+  <h3>7.1 骨架：三层各自挡什么</h3>
+  <table>
+    <tr><th>层</th><th>位置</th><th>挡住什么</th><th>返回什么</th></tr>
+    <tr><td>① 接口级</td><td><code>@RequirePermission(REPORT_PROFIT_READ)</code></td><td>整个利润报表接口</td><td><b>403</b>（不是返回 0）</td></tr>
+    <tr><td>② DTO 装配</td><td><code>Operator.canSeeCost()</code> 决定是否填 <code>purchasePrice</code></td><td>商品详情里的单字段</td><td>字段为 <code>null</code></td></tr>
+    <tr><td>③ 查询级</td><td>SQL 里写 <code>NULL AS purchase_price</code></td><td>值是否进入 JVM 内存</td><td>从不加载</td></tr>
+  </table>
+
+  <h3>7.2 为什么 403 而不是返回 0</h3>
+  <p>这是本章最容易被做错的地方。如果店员点"利润"返回 <code>{profit: 0}</code>，会发生什么？</p>
+  <ul>
+    <li>店员会以为今天没赚钱，而不是"我没权限"；</li>
+    <li>前端无法区分"真的 0"和"不给看"，只能显示 0；</li>
+    <li>更糟的是：如果哪天店主看到"利润 0"，会怀疑系统算错了。</li>
+  </ul>
+  <p>所以必须是 403，并且前端根据 403 隐藏入口：</p>
+  <pre><code><span class="kw">if</span> (!pass) {
+    <span class="cmt">// 403 而不是 401：401 会让前端跳登录页，而这里用户是登录着的，只是没这个权限</span>
+    <span class="kw">throw</span> BizException.of(ResultCode.FORBIDDEN,
+            <span class="str">"需要权限："</span> + Arrays.stream(required).map(Permission::code).toList());
+}</code></pre>
+  <p>状态码语义是契约的一部分：401 = 你是谁我不知道；403 = 我知道你是谁，但你不能干这个。混用会让前端逻辑全乱。</p>
+
+  <h3>7.3 为什么最里层要"根本不 SELECT"</h3>
+  <p>看起来 ② 已经够了（字段置 null）。但值一旦进入 JVM 内存，就有三条泄漏路径：</p>
+  <ol>
+    <li><b>日志</b>：某人在 <code>log.debug("sku={}", sku)</code> 里打了整个对象，<code>toString</code> 带出进价；</li>
+    <li><b>异常堆栈</b>：序列化失败时，框架会把对象内容拼进 message；</li>
+    <li><b>调试接口</b>：Swagger 的 Try it out、actuator 的 env/beans（如果开了）。</li>
+  </ol>
+  <p>所以第三层是"不加载"：店员请求的 SQL 里，<code>purchase_price</code> 那一列直接换成 <code>NULL</code>。值从来没进过内存，
+  上面三条路径自然全部断了。</p>
+  <pre><code><span class="cmt">// infrastructure/persistence/CatalogRepositoryImpl.java（示意）</span>
+String costCol = op.canSeeCost() ? <span class="str">"s.purchase_price"</span> : <span class="str">"NULL AS purchase_price"</span>;
+String sql = <span class="str">"SELECT ... , "</span> + costCol + <span class="str">" FROM cat_sku ..."</span>;</code></pre>
+  <div class="note">
+    <b>为什么这不是"拼接 SQL 注入"</b>：拼进去的是两个<b>编译期常量</b>之一，不来自用户输入。凡是"拼接"都要检查这一点：
+    拼的是常量就没问题，拼的是变量就必须走参数化。
+  </div>
+
+  <h3>7.4 一个真实的测试陷阱</h3>
+  <p>权限测试里断言"店员看到的 <code>purchasePrice</code> 为空"，第一版这样写：</p>
+  <pre><code>assertEquals(<span class="kw">null</span>, sku.get(<span class="str">"purchasePrice"</span>));   <span class="cmt">// 失败</span></code></pre>
+  <p>原因：实体上标了 <code>@JsonInclude(NON_NULL)</code>，字段为 null 时<b>键根本不存在</b>，<code>get</code> 返回 <code>NullNode</code> 而不是 Java <code>null</code>。
+  这不是 bug，是"省流量"的正常行为。断言必须同时接受两种形态：</p>
+  <pre><code>JsonNode p = sku.get(<span class="str">"purchasePrice"</span>);
+assertTrue(p == <span class="kw">null</span> || p.isNull() || p.isMissingNode());</code></pre>
+  <p>这个细节值得记住：<b>"字段为 null" 和 "字段不存在" 在 JSON 里是两件事</b>，前端 <code>obj.purchasePrice</code> 两种都是 <code>undefined</code>，
+  但服务端序列化配置会改变契约，测试必须按契约写。</p>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>权限的本质是<b>信息流控制</b>，不是"界面显不显示"。所以判断一个系统的权限做得对不对，看三个问题：
+    值有没有进入不该进入的进程？进入了内存后有没有可能被日志带出去？返回"无权限"时语义是否明确？</p>
+    <p>最里层的"不查询"还有一层性能含义：少查一列，少一次磁盘/网络传输。安全与性能在这里方向一致，很少见。</p>
+  </div>
+
+  <div class="box arch">
+    <h5>【架构师视角】</h5>
+    <p>三层防御的成本是递增的：① 一个注解（几乎零成本）② 一个布尔判断（低成本）③ SQL 分叉（要维护两套 SQL 片段）。
+    所以顺序是"从外到内，能在外层挡就不进内层"：接口级能挡的（整个报表），不要靠字段级；字段级能挡的（单个进价），不要靠前端隐藏。</p>
+    <p>但最里层必须存在，因为它防的不是"正常请求"，而是<b>绕过正常请求的那些路径</b>：导出、缓存预热、MQ 消费、定时任务。
+    这些路径往往不走 Controller，注解管不到——它们才是数据泄漏的高发区。</p>
+  </div>
+
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q">为什么用拦截器而不是 Spring Security？</p>
+    <p class="a">Spring Security 更完整（认证/授权/CSRF/会话），但它的抽象层次高，一个"为什么 403 变成了 401"的问题可能要读三层过滤器才能定位。
+    本项目只有一个角色维度 + 静态权限码表，用 40 行自定义拦截器足够，而且行为可预测。选型的标准是<b>可调试性</b>，
+    不是"功能多少"——用了安全框架却说不清它的过滤链顺序，风险比自研更大。</p>
+    <p class="q">权限码为什么用枚举而不是字符串？</p>
+    <p class="a">枚举让"权限码拼错"变成编译错误，而不是运行时 403。15 个权限码在 <code>Permission</code> 枚举里，
+    与数据库 <code>sys_role_permission</code> 的 <code>code</code> 列对应，启动时校验一致性（不一致就启动失败）。</p>
+    <p class="q">店主要看店员有没有偷偷改价，权限怎么设计？</p>
+    <p class="a">不是加权限，而是留痕：流水里记 <code>operator_id</code>、<code>operator_name</code> 与创建时间，
+    冲正必须写反向流水而不是删原记录。这样"谁在什么时候把 259 改成 199"是可查的。权限管"能不能做"，审计管"做过了没有"，
+    两者不能互相替代——这也是 Q62"可撤销且留痕"的实现方式。</p>
+  </div>
+</section>
+
+<!-- ================= 第 8 章 ================= -->
+<section class="chapter">
+  <h2>第 8 章　@Transactional 的四个边界陷阱</h2>
+  <p class="lede">这一章没有新功能，只有四个"看起来能跑、上线才炸"的坑。每一个都在本项目里真实出现过或差点出现。</p>
+
+  <h3>8.1 陷阱一：锁在方法返回时就释放了</h3>
+  <p>如果 <code>move()</code> 自己开事务（<code>@Transactional</code> 标在领域服务上），那么方法一返回锁就释放，
+  而"写流水"在调用方的事务里——两者之间有一个窗口：库存扣了、流水还没写，此时进程崩溃，账本缺一页。</p>
+  <pre><code><span class="cmt">// ✅ 正确：领域服务不开事务，加入调用方的事务（REQUIRED 传播）</span>
+<span class="kw">@Transactional</span>                       <span class="cmt">// 只在 application 层</span>
+<span class="kw">public</span> AddResult addItem(...) {
+    stockDomainService.move(...);        <span class="cmt">// 同一个事务、同一个连接、同一把锁</span>
+    saleRepository.upsertItem(...);
+}
+
+<span class="cmt">// ❌ 错误：领域服务自己开一个，返回即提交，锁立刻释放</span>
+<span class="kw">@Transactional</span>(propagation = REQUIRES_NEW)
+<span class="kw">public</span> StockFlow move(MoveCmd cmd) { ... }</code></pre>
+  <p><code>REQUIRES_NEW</code> 会挂起外层事务、开新连接、独立提交。它在"审计日志必须留下"这种场景有用，
+  但在"库存+流水"这种必须原子的场景是灾难。</p>
+
+  <h3>8.2 陷阱二：同类内部调用，注解静默失效</h3>
+  <pre><code><span class="kw">public</span> AddResult addItem(...) {
+    <span class="kw">this</span>.doMove(...);        <span class="cmt">// ❌ 不走代理，doMove 上的 @Transactional 无效</span>
+}
+<span class="kw">@Transactional</span>
+<span class="kw">public void</span> doMove(...) { ... }</code></pre>
+  <p>因为调用方持有的是 <code>this</code>（原始对象），不是 CGLIB 代理（第 2.3 节第 3 步）。三种解法：
+  ① 把方法挪到另一个 Bean；② 注入自身代理（<code>@Lazy</code> 自注入）；③ 用 <code>AopContext.currentProxy()</code>。
+  最省心的是 ①——需要事务的边界本来就不该藏在私有方法里。</p>
+
+  <h3>8.3 陷阱三：异常被吞，事务不回滚</h3>
+  <p>Spring 默认只对 <code>RuntimeException</code> 和 <code>Error</code> 回滚。如果业务里抛的是受检异常，或者 catch 住没再抛，事务会<b>提交</b>：</p>
+  <pre><code><span class="kw">try</span> {
+    stockDomainService.move(...);
+} <span class="kw">catch</span> (Exception e) {
+    log.warn(<span class="str">"扣库存失败"</span>, e);      <span class="cmt">// ❌ 吞掉了：事务照常提交，库存没扣但订单行写了</span>
+}</code></pre>
+  <p>本项目所有业务异常都是 <code>BizException extends RuntimeException</code>，且全局处理器只负责"翻译成 HTTP 码"，
+  不负责"决定是否回滚"——回滚由传播中的异常自然触发。</p>
+  <p>唯一需要显式 catch 的地方是第 4 章那个 <code>DuplicateKeyException</code>：它必须被 catch，但要在 catch 里做
+  <code>rollbackToSavepoint</code> + 回放，是"有补偿的 catch"，不是"吞掉"。</p>
+
+  <h3>8.4 陷阱四：事务里做远程调用</h3>
+  <p>事务持有行锁的期间，任何网络往返都在<b>延长锁持有时间</b>。如果结账时同步发一条 MQ 消息、或调一次短信网关，
+  网关卡 3 秒，这个 SKU 的锁就持有 3 秒——期间所有店员扫这件货全部排队。</p>
+  <p>所以消息一律走事务性发件箱（第 9 章）：事务里只 INSERT 一行 outbox（本地写，微秒级），事务提交后由调度器异步发送。
+  同理，导出、报表、图片处理都不能在事务里做。</p>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>Spring 事务的本质是<b>连接的绑定与释放</b>：<code>@Transactional</code> 让当前线程从 <code>DataSourceUtils</code> 拿到同一个
+    <code>Connection</code> 并绑到 <code>ThreadLocal</code>，方法结束时提交并解绑。<code>REQUIRES_NEW</code> 是新拿一个连接；
+    同类内部调用不换代理，所以拿不到新连接、也不会开事务。</p>
+    <p>因此判断事务是否生效，只要问一句：<b>这段代码跑的时候，线程上绑着连接吗？</b></p>
+  </div>
+
+  <div class="box arch">
+    <h5>【架构师视角】</h5>
+    <p>事务边界应该画在"一个业务用例"上，而不是"一个数据库操作"上。用一句话检验：<b>如果这个方法执行到一半崩溃，业务上允许看到中间状态吗？</b>
+    库存扣了但流水没写 → 不允许，必须一个事务。订单创建了但库存没扣 → Q47 允许（挂单未结账），可以分开。</p>
+    <p>另一个经验：<b>事务方法要尽量短</b>。本项目把"扫码加购"拆成"校验 → 闸门 → 扣减+写单 → 回写缓存+发件箱"四段，
+    只有第三段在事务里，前两段是纯读、后一段是本地写。锁持有时间因此只有一条 UPDATE + 一条 INSERT 的量级。</p>
+  </div>
+
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q">为什么不要在 Controller 上加 @Transactional？</p>
+    <p class="a">因为 Controller 里通常有参数校验、日志、DTO 转换，加事务会让这些无害操作也占着连接；而且它把事务边界画在了"协议层"，
+    一旦有别的入口（定时任务、MQ）复用同一段业务，就得再写一遍。事务属于用例，属于 application 层。</p>
+    <p class="q">只读事务有什么用？</p>
+    <p class="a">两个作用：① 让 MySQL 走一致性快照读，避免同一请求内多次查询看到不同数据（比如报表里"合计"和"明细"对不上）；
+    ② 某些驱动/连接池会给只读连接做优化（如 PG 的 <code>SET TRANSACTION READ ONLY</code>）。本项目报表接口用只读事务。</p>
+    <p class="q">嵌套事务（NESTED）和 SAVEPOINT 是一回事吗？</p>
+    <p class="a">Spring 的 <code>PROPAGATION_NESTED</code> 底层就是用 JDBC 的 SAVEPOINT 实现的（在支持保存点的数据源上）。
+    本项目直接调 <code>TransactionAspectSupport.createSavepoint()</code>，是因为只需要"局部回滚"，不需要独立的传播语义，
+    显式写出来更容易读懂意图。</p>
+    <p class="q">事务提交之后要刷新缓存，怎么保证一定执行？</p>
+    <p class="a">用 <code>TransactionSynchronizationManager.registerSynchronization(afterCommit)</code>，或者干脆放在事务外（本项目把
+    <code>stockGate.reset</code> 放在 <code>@Transactional</code> 方法内部但在最后一步，靠"事务回滚时 catch 里 refund"补偿）。
+    更稳的做法是发件箱 + 异步消费者，但闸门这种"差一点只影响体验、不影响正确性"的场景，补偿式即可。</p>
+  </div>
+</section>
+
+<!-- ================= 第 9 章 ================= -->
+<section class="chapter">
+  <h2>第 9 章　消息不丢：事务性发件箱</h2>
+  <p class="lede">Q12 要求"每天看营业额和利润"，报表是实时算的；但日报聚合、负库存告警这类"事后动作"必须异步。异步就会丢消息。</p>
+
+  <h3>9.1 骨架：为什么不能直接在事务里发 MQ</h3>
+  <p>三种常见写法及它们的问题：</p>
+  <table>
+    <tr><th>写法</th><th>问题</th></tr>
+    <tr><td>事务内 <code>rabbitTemplate.convertAndSend</code></td><td>消息发出去了，事务回滚了 → 消费端处理了一笔不存在的交易；而且网络往返延长锁持有时间</td></tr>
+    <tr><td>事务提交后再发</td><td>提交成功但发送失败（broker 抖一下）→ 消息永远丢了，没有任何重试</td></tr>
+    <tr><td>本地表 + 调度器（发件箱）</td><td>✅ 消息与业务同一个本地事务，发送失败可重试，不丢不重（消费端幂等）</td></tr>
+  </table>
+
+  <h3>9.2 语法逐行：发件箱的两段</h3>
+  <pre><code><span class="cmt">// ① 事务内：只写本地表，微秒级，和业务同生共死</span>
+supportRepository.appendOutbox(<span class="str">"SALE-"</span> + orderNo, <span class="str">"SALE_COMPLETED"</span>,
+        RabbitConfig.EXCHANGE, <span class="str">"report.sale"</span>, payloadJson);
+
+<span class="cmt">// ② 事务外：调度器抢占并发送</span>
+<span class="kw">@Scheduled</span>(fixedDelay = 1000, initialDelay = 3000)
+<span class="kw">public void</span> dispatch() {
+    List&lt;OutboxMessage&gt; batch = supportRepository.claimOutbox(20);   <span class="cmt">// FOR UPDATE SKIP LOCKED</span>
+    <span class="kw">for</span> (OutboxMessage msg : batch) {
+        <span class="kw">try</span> {
+            rabbitTemplate.convertAndSend(msg.exchange(), msg.routingKey(), msg.payload());
+            supportRepository.markOutboxSent(msg.id());
+        } <span class="kw">catch</span> (Exception e) {
+            <span class="kw">int</span> retry = msg.retryCount() + 1;
+            <span class="kw">long</span> delay = Math.min(60, 1L &lt;&lt; Math.min(retry, 5));   <span class="cmt">// 1,2,4,8,16,32→60s</span>
+            supportRepository.markOutboxFailed(msg.id(), retry, now().plusSeconds(delay));
+        }
+    }
+}</code></pre>
+
+  <h4>为什么是 <code>FOR UPDATE SKIP LOCKED</code></h4>
+  <pre><code><span class="kw">SELECT</span> id, exchange, routing_key, payload, retry_count
+  <span class="kw">FROM</span> msg_outbox
+ <span class="kw">WHERE</span> status = 0 <span class="kw">AND</span> next_retry_at &lt;= <span class="kw">NOW</span>(3)
+ <span class="kw">ORDER BY</span> id
+ <span class="kw">LIMIT</span> 20
+   <span class="kw">FOR UPDATE SKIP LOCKED</span></code></pre>
+  <p><code>SKIP LOCKED</code>（MySQL 8.0+）的语义是"遇到已被别人锁住的行就跳过，不等待"。这让多个应用实例可以同时抢同一张表而不互相阻塞：
+  实例 A 抢到 1–20，实例 B 直接跳到 21–40。<b>没有它，多实例部署时调度器会互相等锁，吞吐退化成单实例。</b></p>
+  <p>而且抢占后立刻置 <code>status=8（发送中）</code>，保证同一条消息不会被两个实例同时发。</p>
+
+  <h3>9.3 事故：消息全进死信，报"无法反序列化"</h3>
+  <p>生产报文是 JSON 文本，发布端 <code>Jackson2JsonMessageConverter</code> 却把它当成 String 发（<code>__TypeId__=java.lang.String</code>）。
+  消费端两次尝试都失败：</p>
+  <ul>
+    <li>形参声明 <code>String</code> → 遇到对象形态报 <code>Cannot deserialize String from Object</code>；</li>
+    <li>形参声明 <code>JsonNode</code> → 遇到字符串形态报 <code>Cannot convert from [java.lang.String] to [JsonNode]</code>。</li>
+  </ul>
+  <p>两次都只错一半，而且都只在"真的有单成交"时才暴露（空消息不会触发）。最终解法是<b>放弃让转换器猜类型</b>：</p>
+  <pre><code><span class="kw">public void</span> onMessage(org.springframework.amqp.core.Message message) {
+    JsonNode root = PayloadReader.read(objectMapper, message.getBody());   <span class="cmt">// 拿原始字节自己解析</span>
+    ...
+}
+
+<span class="cmt">// PayloadReader：文本节点再解一层，两种形态都能接住</span>
+JsonNode root = mapper.readTree(body);
+<span class="kw">if</span> (root != null &amp;&amp; root.isTextual()) <span class="kw">return</span> mapper.readTree(root.asText());
+<span class="kw">return</span> root;</code></pre>
+  <p>代价是几行代码，换来"不管谁发什么形状都能接住"。这是<b>消息协议边界的防御性编程</b>：跨进程的契约永远比代码里写的宽松。</p>
+
+  <h3>9.4 双端共用 broker 的串台事故</h3>
+  <p>Java 版和 Python 版最初都用交换机 <code>yilian.stock</code>。结果两边的消息互相被对方的队列消费，
+  Python 的消费端解析 Java 的消息体直接进死信，日志满屏 <code>PRECONDITION_FAILED</code>（队列的 DLX 参数不一致）。</p>
+  <p>修法不是"改队列名"，而是<b>加命名空间</b>：<code>yilian.stock.java</code> / <code>yilian.stock.py</code>。
+  这条经验值得记住：<b>共享中间件时，命名空间必须在第一行代码里就规划好</b>，否则后期要停机删队列重建。</p>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>分布式消息只有"至少一次"（at-least-once），没有"恰好一次"。所以正确性的落点是<b>消费端幂等</b>：
+    <code>msg_consumed</code> 表以 <code>message_id</code> 为主键，重复投递时插入失败即跳过。</p>
+    <p>发件箱解决的是"发送"这一侧的原子性：业务数据与待发消息在同一个本地事务里，于是要么都成功、要么都失败。
+    它把"分布式事务"降解成了"本地事务 + 可重试的异步发送"——这是工程上最划算的一次妥协。</p>
+  </div>
+
+  <div class="box arch">
+    <h5>【架构师视角】</h5>
+    <p>为什么重试要有上限（5 次转死信）？因为<b>一条坏消息能堵死整个队列</b>：如果无限重试且顺序消费，后面所有消息都等它。
+    死信队列的价值不是"存起来看"，而是"把毒消息隔离，让主队列继续流动"。</p>
+    <p>另一个判断：<b>哪些动作用异步？</b>标准是"失败了能不能重来、延迟能不能接受"。报表聚合能重来、延迟几分钟无所谓 → 异步；
+    扣库存不能重来（重来就是多扣一次）→ 同步。这个判断决定了系统的响应时间分布。</p>
+  </div>
+
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q">发件箱和本地消息表（Kafka 的 transactional outbox）是一回事吗？</p>
+    <p class="a">是同一模式的不同实现。核心都是"业务表 + 消息表同库同事务"。差别在投递方式：Kafka 可以用事务性生产者
+    做两阶段提交（更复杂），RabbitMQ 一般就是本地表 + 轮询。</p>
+    <p class="q">轮询发件箱会不会有延迟？</p>
+    <p class="a">有，本项目 <code>fixedDelay=1000</code>，最坏 1 秒。对"日报聚合"这种场景完全够。如果要亚秒级，可以在业务提交后
+    <b>主动触发一次</b> <code>dispatch()</code>（通知而非轮询），轮询只作为兜底。这也是"推拉结合"的常见做法。</p>
+    <p class="q">消费端幂等键用什么？</p>
+    <p class="a"><code>message_id</code> 必须是<b>生产者生成的稳定 ID</b>，不能用 RabbitMQ 的 <code>deliveryTag</code>（每次投递都变）也不能用消息体哈希
+    （大消息哈希成本高且可能碰撞）。本项目用 <code>bizNo + 事件类型</code>，天然唯一且能人工核对。</p>
+    <p class="q">如果数据库提交了，但进程在发送前崩溃？</p>
+    <p class="a">消息还在表里（<code>status=0</code>），另一个实例或重启后的调度器会接着发。这正是发件箱相比"提交后直接发"的核心优势——
+    <b>崩溃不丢消息</b>。</p>
+  </div>
+</section>
+
+<!-- ================= 第 10 章 ================= -->
+<section class="chapter">
+  <h2>第 10 章　断网还能卖货</h2>
+  <p class="lede">Q23 的原话是"有时候网不好，扫了没反应，等有网了又要重新扫"。这一章处理的是"人在物理世界已经完成交易，但系统还不知道"。</p>
+
+  <h3>10.1 骨架：客户端队列 + 服务端裁决</h3>
+  <p>难点不在"存起来等会儿发"，而在三件事：</p>
+  <ol>
+    <li><b>顺序</b>：同一台手机断网时扫了 5 件，联网后必须按原顺序补录（否则"先卖后入"会算出负库存）；</li>
+    <li><b>重复</b>：网络超时可能让客户端以为失败、实际成功，重传必须幂等；</li>
+    <li><b>冲突</b>：补录时库存已经不够了，怎么办？</li>
+  </ol>
+  <p>对应三个设计：</p>
+  <ul>
+    <li>每台设备一个 <code>deviceId</code>，每条记录一个单调递增的 <code>deviceSeq</code>（<b>不信任手机时钟</b>，时钟可以被改、可以漂）；</li>
+    <li>每条记录带 <code>clientToken</code>（UUID），服务端靠它判重；</li>
+    <li>服务端<b>逐条裁决</b>，四种结果：<code>ACCEPTED / DUPLICATED / CONFLICTED / REJECTED</code>。</li>
+  </ul>
+
+  <h3>10.2 关键决策：绝不整批回滚</h3>
+  <pre><code><span class="kw">for</span> (Item item : sorted) {                    <span class="cmt">// 按 deviceSeq 升序</span>
+    ReconcileBatch.Item result = process(item, op, bizNo);
+    <span class="kw">switch</span> (result.result()) {                 <span class="cmt">// 计数，绝不 throw</span>
+        <span class="kw">case</span> ACCEPTED -&gt; accepted++;
+        <span class="kw">case</span> DUPLICATED -&gt; duplicated++;
+        <span class="kw">case</span> CONFLICTED -&gt; conflicted++;
+        <span class="kw">case</span> REJECTED -&gt; rejected++;
+    }
+    results.add(result);
+    supportRepository.insertReconcileItem(batchId, result);
+}</code></pre>
+  <p>为什么不能整批回滚？因为这一批记录代表<b>已经发生的事实</b>：店员已经把衣服给顾客了，钱也收了。
+  如果因为其中一条（比如某个条码扫错了）回滚整批，剩下 4 条真实的交易就"消失"了——账实不符比少记一条严重得多。</p>
+  <p>逐条裁决的代价是"部分成功"，所以必须给店员一个可读的结果清单：哪条进去了、哪条是重复、哪条库存不够、哪条条码不认识。
+  前端的 <code>offline.js</code> 只清除<b>已裁决</b>的条目，<code>CONFLICTED</code> 的留在队列里等人处理。</p>
+
+  <h3>10.3 process() 的四条分支</h3>
+  <pre><code><span class="kw">private</span> ReconcileBatch.Item process(Item item, Operator op, String bizNo) {
+    <span class="cmt">// 1) 令牌级幂等：这条离线记录之前已经入账过</span>
+    <span class="kw">var</span> existing = flowRepository.findByClientToken(item.clientToken());
+    <span class="kw">if</span> (existing.isPresent()) <span class="kw">return</span> duplicated(existing.get());
+
+    <span class="cmt">// 2) 条码必须认识，否则无法入账（Q38：让店员手输补录）</span>
+    SkuView sku = catalogRepository.findSkuByBarcode(item.barcode(), <span class="kw">true</span>).orElse(<span class="kw">null</span>);
+    <span class="kw">if</span> (sku == <span class="kw">null</span>) <span class="kw">return</span> rejected(<span class="str">"BARCODE_UNKNOWN"</span>);
+
+    <span class="kw">try</span> {
+        <span class="kw">boolean</span> inbound = item.scanType() == 1;
+        <span class="kw">var</span> flow = stockDomainService.move(MoveCmd
+                .in(sku, item.warehouseId(), item.quantity(), op, bizNoGenerator.flowNo())
+                .withType(inbound ? FlowType.IN : FlowType.SALE, inbound ? 1 : -1)
+                .withBizNo(bizNo)
+                .withClientToken(item.clientToken())      <span class="cmt">// 幂等键落库</span>
+                .withRemark(<span class="str">"离线补录"</span>));
+        <span class="kw">return</span> accepted(flow);
+    } <span class="kw">catch</span> (BizException e) {
+        <span class="cmt">// 库存不足：不进库存、不抛给整批，交给人工处理（Q47「由操作人决定」）</span>
+        String reason = e.resultCode() == ResultCode.STOCK_SHORTAGE
+                ? <span class="str">"INSUFFICIENT_STOCK:"</span> + e.payload().getOrDefault(<span class="str">"remainQty"</span>, 0)
+                : e.resultCode().name();
+        <span class="kw">return</span> conflicted(reason);
+    }
+}</code></pre>
+  <p>四个细节：</p>
+  <ul>
+    <li><code>sorted</code> 按 <code>deviceSeq</code> 排序，且<b>服务端再排一次</b>——不信任客户端发来的顺序；</li>
+    <li><code>CONFLICTED</code> 里带上 <code>remainQty</code>，店员能看到"当时只剩 1 件"；</li>
+    <li>整批仍在一个事务里（<code>@Transactional</code> 在外层），所以<b>要么全部落库、要么全不落</b>——"逐条裁决"指的是<b>业务判定</b>不整批失败，
+    而不是"每条独立提交"。这样既保证账本一致，又不会因为一条冲突丢掉其余四条；</li>
+    <li>整批重传（网络超时后客户端不确定）靠 <code>batchNo</code> 幂等：<code>findReconcileBatch</code> 命中直接返回上次结果。</li>
+  </ul>
+
+  <h3>10.4 断网前预热</h3>
+  <p>光有队列还不够：断网时店员连"这是什么货、还剩几件"都查不到。所以有 <code>GET /sync/bootstrap</code>，
+  把商品 + 库存矩阵整包下发（本项目约 200 行），前端存进 localStorage/IndexedDB。断网时扫码仍能显示品名与余量，
+  只是不能保证准（本地快照可能过期），这一点必须在界面上说清楚。</p>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>离线和在线不是两种系统，而是<b>同一个系统的两种时序</b>。判断一个离线设计好不好，看它是否回答了：
+    事件顺序谁定？（<code>deviceSeq</code>）重复怎么识别？（<code>clientToken</code>）冲突谁裁决？（服务端，逐条）
+    裁决结果怎么回到人？（回执清单 + 只清已裁决条目）。</p>
+    <p>核心认知：<b>物理世界已经发生的事，系统不能"撤销"</b>。所以服务端永远不能因为一条坏数据拒绝整批——它只能记录、标注、交给人处理。</p>
+  </div>
+
+  <div class="box arch">
+    <h5>【架构师视角】</h5>
+    <p><code>deviceSeq</code> 而不是时间戳，是这一章最重要的决定。手机时钟在断网时可能被系统校准跳变、可能被店员手动改、可能跨时区，
+    任何基于时间的排序都会在这些情况下错乱。而单调计数器只在"同一台设备、同一个队列"内递增，天然全序，且不依赖外部。</p>
+    <p>代价是：如果客户端重装 App，<code>deviceSeq</code> 会重置。所以幂等键用 <code>clientToken</code>（UUID）而不是 <code>deviceSeq</code>——
+    <b>排序用序号，判重用令牌</b>，两个职责分开。</p>
+  </div>
+
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q">为什么不用 CRDT / 最后写入获胜（LWW）？</p>
+    <p class="a">LWW 依赖时钟，而时钟在离线场景恰恰不可信（上面说的三条）。而且库存是<b>累计量</b>不是可覆盖的状态：
+    两笔销量要相加，不能"谁晚谁赢"。CRDT 的 PN-Counter 可以表达累加，但它解决不了"库存不足"这个业务约束——
+    加到最后是负数，"谁该被拒"必须由业务裁决。</p>
+    <p class="q">如果离线补录时库存已经卖给别人了？</p>
+    <p class="a">返回 <code>CONFLICTED + remainQty</code>，留在队列里等人工处理（店员可以选择"强制出库"或"这单退款"）。
+    系统不做"自动负库存"，因为负库存意味着数据已经不可信，必须让人介入。</p>
+    <p class="q">整批在一个事务里，会不会锁太多行？</p>
+    <p class="a">会。所以限制了单批最多 50 条，且按 <code>deviceSeq</code> 顺序处理、SKU 可能重复。更好的做法是<b>按 SKU 聚合后再加锁</b>
+    （<code>lockAllSorted</code>），本项目在调拨路径用了这个手法；离线批次因为量大且顺序敏感，暂时用"逐条加锁"，
+    在 3–5 人的规模下（一次补录通常 &lt;10 条）不会成为瓶颈。</p>
+  </div>
+</section>
+
+<!-- ================= 第 11 章 ================= -->
+<section class="chapter">
+  <h2>第 11 章　测试是在测什么</h2>
+  <p class="lede">27 个用例，19 个不需要容器，8 个打真 HTTP。这一章讲清楚"为什么这样分"，以及每个用例在防哪种回归。</p>
+
+  <h3>11.1 分层的判据：失败时你想知道什么</h3>
+  <table>
+    <tr><th>层</th><th>用例数</th><th>启动成本</th><th>失败时告诉你</th></tr>
+    <tr><td>领域单测（条码/定价/矩阵）</td><td>19</td><td>0（纯函数）</td><td>"这条规则算错了"——精确定位到方法</td></tr>
+    <tr><td>集成测试（并发/权限）</td><td>8</td><td>~27 秒（Spring + MySQL + Redis + MQ）</td><td>"这个组合在真实环境下不对"——定位到场景</td></tr>
+  </table>
+  <p>为什么领域测试要"零容器"？因为<b>1 秒的测试会被天天跑，30 秒的测试三天就没人跑了</b>。
+  <code>PricingServiceTest</code> 7 个用例跑完 &lt;1s，可以挂在保存时钩子上；<code>ConcurrencyIT</code> 37 秒，只能在提交前跑。</p>
+
+  <h3>11.2 集成测试为什么必须打真 HTTP</h3>
+  <p>开发期真实踩到的两个致命缺陷，纯单测一个都发现不了：</p>
+  <ol>
+    <li><b>"开单成功但立刻查详情 404"</b>——事务提交晚于响应（Python 版是 yield 依赖的退出时机，Java 版是同类自调用导致注解失效）。这是<b>框架时序</b>问题，函数级测试看不到时序；</li>
+    <li><b>"入库 10 件后扫码仍提示仅剩 0 件"</b>——Redis 闸门陈旧值。这是<b>跨组件状态</b>问题，需要真的 Redis 才能复现。</li>
+  </ol>
+  <p>所以 <code>IntegrationTestSupport</code> 用 <code>@SpringBootTest(webEnvironment = RANDOM_PORT)</code> + JDK <code>HttpClient</code>：
+  真起 Tomcat、真连中间件、真发 HTTP。它比 MockMvc 慢，但能测到 MockMvc 永远测不到的东西（过滤器顺序、序列化、连接池、事务边界）。</p>
+
+  <h3>11.3 并发用例怎么写才不是摆设</h3>
+  <pre><code><span class="cmt">// 同起跑线：不让任何一个线程提前开跑，否则测的是"串行 + 一点并发"</span>
+<span class="kw">var</span> start = <span class="kw">new</span> CountDownLatch(1);
+<span class="kw">var</span> done = <span class="kw">new</span> CountDownLatch(threads);
+<span class="kw">for</span> (<span class="kw">int</span> i = 0; i &lt; threads; i++) {
+    executor.submit(() -&gt; {
+        start.await();                       <span class="cmt">// 所有线程在这里等同一个信号</span>
+        <span class="kw">try</span> { results.add(post(...)); } <span class="kw">finally</span> { done.countDown(); }
+    });
+}
+start.countDown();                           <span class="cmt">// 一声令下，同时冲</span>
+done.await(30, SECONDS);</code></pre>
+  <p>断言必须<b>精确</b>而不是"大约"：24 线程后库存必须<b>正好</b>少 24（<code>assertEquals(before - 24, after)</code>）。
+  如果写成 <code>assertTrue(after &lt; before)</code>，丢失更新也能过——那这个用例就是摆设。</p>
+  <p>另一个技巧：<b>故意把实现改坏，看用例是否变红</b>。把 <code>quantity = quantity - ?</code> 改回 <code>SET quantity = ?</code>，
+  <code>noLostUpdate</code> 立刻失败——这一步验证了用例的有效性，比"用例通过"本身更重要。</p>
+
+  <h3>11.4 权限测试的两个坑</h3>
+  <ul>
+    <li><b>断言"字段不存在"而不是"字段为 null"</b>：<code>@JsonInclude(NON_NULL)</code> 会把 null 字段整个省掉（第 7.4 节）；</li>
+    <li><b>断言状态码而不是消息</b>：<code>403</code> 是契约，<code>"需要权限：xxx"</code> 是给人看的文案，文案会改，状态码不该改。</li>
+  </ul>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>测试的价值不在"覆盖率"，而在<b>它替你记住了哪些前提</b>。<code>noOversell</code> 记住了"库存不能为负"；
+    <code>sameScanTokenUnderConcurrency</code> 记住了"幂等在并发下也必须成立"；<code>gateWrittenBackAfterReplenish</code>
+    记住了"缓存是派生数据，必须能被真值纠正"。这三条都是<b>设计约束</b>，不是功能点。</p>
+    <p>所以好的测试命名是"约束句式"而不是"方法名句式"：<code>noLostUpdate</code> 比 <code>testAddItem3</code> 有信息量。</p>
+  </div>
+
+  <div class="box arch">
+    <h5>【架构师视角】</h5>
+    <p>测试金字塔常被理解成"单测多、集成少"，但真正的判据是<b>失败反馈的速度与精度</b>。领域测试 0.3 秒告诉你"这一行算错了"；
+    集成测试 37 秒告诉你"这个场景整体不对"。两者不是"多少"的关系，而是"先用哪个"的关系：先用快的排除逻辑错误，再用慢的验证协作。</p>
+    <p>本项目故意让集成测试<b>连真实中间件</b>而不是 Testcontainers 每次起新容器，原因很实际：起容器 20 秒，37 秒的测试会变成 60 秒，
+    而失败原因经常是"容器还没起来"。用固定环境 + 用例自建数据（<code>setStock</code>）更快也更稳定。</p>
+  </div>
+
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q">集成测试依赖真实数据库，CI 上怎么跑？</p>
+    <p class="a">两种：① CI 里用 <code>docker compose up</code> 起依赖（本项目 Dockerfile 就是这么设计的）；② 用 Testcontainers 按需起。
+    关键是测试必须<b>自己准备数据</b>（不依赖环境里已有数据），且<b>可重复运行</b>（幂等）——本项目所有用例都走真实业务接口建数据，
+    跑一百遍结果一样。</p>
+    <p class="q">怎么测"两个人同时扫码"这种偶发问题？</p>
+    <p class="a">不能靠"多跑几次碰运气"。要用 <code>CountDownLatch</code> 制造<b>确定性的并发窗口</b>，并把断言写成精确值。
+    如果并发窗口太窄导致偶发，可以在测试里加一个可注入的延迟钩子（本项目没有这么做，因为行锁窗口足够宽）。</p>
+    <p class="q">覆盖率要求多少？</p>
+    <p class="a">本项目没设覆盖率门槛，因为覆盖率最容易造假（Getter 也算覆盖）。替代指标是"<b>每条硬约束都有一个用例</b>"：
+    不丢更新、不超卖、幂等、不越权、金额守恒、矩阵顺序。这六条各有专门用例，比 80% 覆盖率有意义。</p>
+  </div>
+</section>
+
+<!-- ================= 第 12 章 ================= -->
+<section class="chapter">
+  <h2>第 12 章　面试速查 20 问</h2>
+  <p class="lede">这一章是可以直接背的版本。每一条都能在前 11 章找到完整推导。</p>
+
+  <h3>12.1 并发与一致性（8 问）</h3>
+  <table>
+    <tr><th>问题</th><th>一句话答案</th></tr>
+    <tr><td>两人同时扫码怎么不覆盖？</td><td>三层：唯一索引挡重复、Redis 闸门挡量、行锁+原子算术保证终值；顺序是先便宜后贵。</td></tr>
+    <tr><td>为什么行锁没有锁全表？</td><td>因为 <code>(sku_id, warehouse_id)</code> 上有唯一索引，命中唯一索引是记录锁；没索引就是临键锁。</td></tr>
+    <tr><td><code>FOR UPDATE</code> 还需要吗？有原子算术不够吗？</td><td>原子算术防丢更新；<code>FOR UPDATE</code> 保证 before/after 在临界区内自洽（流水要对账）。</td></tr>
+    <tr><td>12 个同令牌请求为什么 11 个 500？</td><td>预查撞空后 INSERT 撞唯一索引。修法：SAVEPOINT 局部回滚 + <code>FOR SHARE</code> 当前读回放首单。</td></tr>
+    <tr><td>为什么回查用 <code>FOR SHARE</code>？</td><td>RR 下普通 SELECT 走事务开始快照，看不见并发刚提交的行——"索引说重复，查询说没有"。</td></tr>
+    <tr><td>Redis 挂了会不会算错？</td><td>不会。闸门 fail-open，退化成纯 DB 行锁；DB 是唯一事实源。</td></tr>
+    <tr><td>闸门为什么会"明明有货说没货"？</td><td><code>warmUp</code> 用 setIfAbsent 不覆盖旧值。修法：改库存出口回写 + SHORT 分支回查 DB 纠偏。</td></tr>
+    <tr><td>多 SKU 怎么防死锁？</td><td><code>lockAllSorted</code> 按 skuId 升序加锁，把环消灭在发生前。</td></tr>
+  </table>
+
+  <h3>12.2 金额与数据（5 问）</h3>
+  <table>
+    <tr><th>问题</th><th>一句话答案</th></tr>
+    <tr><td>为什么用 BigDecimal 不用 double？</td><td>二进制浮点表示不了 0.1，累加会漂；财务必须十进制 + 显式舍入模式。</td></tr>
+    <tr><td>折扣分摊差 1 分怎么办？</td><td>行级精确（末行吃余额）+ 整数分域解 <code>Σk·q=r</code>，无解（gcd 不整除）就报残差。</td></tr>
+    <tr><td>毛利用吊牌价还是实收？</td><td>实收。抹零的几块钱不是利润（Q49）。</td></tr>
+    <tr><td>报表怎么自证没算错？</td><td>恒等式：<code>SUM(流水金额 WHERE type IN (2,7,8)) == 实收</code>，且 <code>revenue == gross + cost</code>。</td></tr>
+    <tr><td>退货为什么记负金额？</td><td>营业额要自动抵减；库存回补由 <code>direction</code> 决定，两者分离。</td></tr>
+  </table>
+
+  <h3>12.3 架构与框架（7 问）</h3>
+  <table>
+    <tr><th>问题</th><th>一句话答案</th></tr>
+    <tr><td>DDD 四层和 MVC 三层的差别？</td><td>domain 不依赖框架，所以能被 HTTP/定时任务/MQ 复用，且单测 1 秒跑完。</td></tr>
+    <tr><td><code>@Transactional</code> 为什么会失效？</td><td>同类内部调用不走代理；异常被吞不回滚；受检异常默认不回滚。</td></tr>
+    <tr><td>为什么不在事务里发 MQ？</td><td>事务回滚消息已发（假交易），且网络往返延长锁持有时间。用事务性发件箱。</td></tr>
+    <tr><td><code>SKIP LOCKED</code> 干什么？</td><td>多实例抢同一张 outbox 表时跳过已锁行，不互相等待，吞吐可水平扩展。</td></tr>
+    <tr><td>消息消费报反序列化错误怎么修？</td><td>别让转换器猜类型：拿原始 byte[] 自己解析，文本节点再解一层。</td></tr>
+    <tr><td>权限为什么 403 不返回 0？</td><td>0 会被当成"今天没赚钱"；403 语义明确，前端能据此隐藏入口。</td></tr>
+    <tr><td>为什么最里层 SQL 要写 <code>NULL AS purchase_price</code>？</td><td>值不进内存，就不会从日志/堆栈/调试接口泄漏出去。</td></tr>
+  </table>
+
+  <h3>12.4 三个"送命题"的标准答法</h3>
+  <div class="box qa">
+    <h5>【面试追问与应答】</h5>
+    <p class="q">你这个系统如果日活从 3 人涨到 3 万人，哪里先垮？</p>
+    <p class="a">先垮的是<b>矩阵查询</b>（每次全量透视 + 代际号缓存粒度太粗），然后是<b>行锁热点</b>（爆款秒杀时单 SKU 排队）。
+    对策依次是：矩阵加 Redis 结果缓存（按 warehouse+筛选条件做 key）、爆款用 Redis 预扣做成真正的扣减（DB 只做对账）、
+    发件箱拆表或换 Kafka。但我会先量化——3 人场景下的优化都是负收益，<b>先证明瓶颈再动手</b>。</p>
+    <p class="q">如果让你重做一次，哪里会不一样？</p>
+    <p class="a">三处：① 一开始就把"库存变化通知"做成端口（第 2.4 节），而不是后来补；
+    ② Redis 闸门第一版就该带"回查 DB 纠偏"，否则补货后误报缺货这个 bug 必现；
+    ③ 集成测试从第一天就接真中间件，因为两个致命缺陷都是"框架时序"问题，纯单测永远发现不了。</p>
+    <p class="q">你怎么证明这个系统是对的？</p>
+    <p class="a">不靠"我测过了"，靠三条可复现的证据：① 27 个用例覆盖 6 条硬约束（不丢更新/不超卖/幂等/不越权/金额守恒/矩阵顺序），
+    且故意改坏实现时会变红；② 报表恒等式 <code>SUM(流水) == 实收</code> 作为运行时断言；③ 账本只追加、冲正写反向流水，
+    任何时点的库存都能由流水重放出来——<b>能重放，才叫对得上账</b>。</p>
+  </div>
+
+  <div class="box essence">
+    <h5>【技术本质总结】</h5>
+    <p>面试考的不是"你知道多少名词"，而是<b>"你的判断依据是什么"</b>。同一个问题（用不用分布式锁、要不要上微服务、缓存放哪一层），
+    答案取决于三个前提：冲突概率、错误代价、团队规模。能说清前提的人，答案就是对的；只会背结论的人，换个场景就错。</p>
+  </div>
+
+  <div class="footer-note">
+    讲义结束。全部代码与数字来自 <code>D:\!javaproject\clothing</code> 的真实文件与真实执行输出；
+    与之对照的 Python 独立实现见《Python 后端深度讲义》——两套系统零共享代码，只共享 HTTP 契约。
+  </div>
+</section>
+
+</body>
+</html>

@@ -1,0 +1,193 @@
+/* 设计基调：米白纸感 + 墨色边框 + 一点朱红。
+   服装店软件的使用场景是柜台前、灯光偏暖、店员单手操作，
+   所以按钮要够大、数字要够黑、留白要够多，而不是塞满小字。 */
+:root {
+  --ink: #1c1a17;
+  --ink-2: #3d3831;
+  --paper: #f6f2ea;
+  --card: #fffdf8;
+  --line: #e3dac8;
+  --accent: #c0392b;
+  --accent-soft: #f7e7e3;
+  --muted: #7d746a;
+  --ok: #2f7d54;
+  --warn: #b07d1a;
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(28, 26, 23, 0.06), 0 8px 24px -16px rgba(28, 26, 23, 0.35);
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-family: "Songti SC", "Noto Serif SC", Georgia, serif;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: background 0.15s, border-color 0.15s, transform 0.06s;
+}
+button:active {
+  transform: translateY(1px);
+}
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+input,
+select {
+  font: inherit;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--ink);
+  outline: none;
+  min-width: 0;
+}
+input:focus,
+select:focus {
+  border-color: var(--ink-2);
+  box-shadow: 0 0 0 3px rgba(28, 26, 23, 0.06);
+}
+
+.btn {
+  padding: 10px 16px;
+  background: var(--card);
+  border-color: var(--line);
+  color: var(--ink);
+}
+.btn:hover {
+  border-color: var(--ink-2);
+}
+.btn-primary {
+  background: var(--ink);
+  color: #fbf7ef;
+  border-color: var(--ink);
+}
+.btn-primary:hover {
+  background: #2c2822;
+}
+.btn-accent {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  padding: 6px 10px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.muted {
+  color: var(--muted);
+}
+.num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+.mono {
+  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-size: 12.5px;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.spread {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.grow {
+  flex: 1;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+th {
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  background: #fbf7ef;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+tbody tr:hover {
+  background: #fbf7ef;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  background: #fbf7ef;
+  color: var(--ink-2);
+}
+.pill-accent {
+  background: var(--accent-soft);
+  border-color: #eccfc8;
+  color: var(--accent);
+}
+.pill-ok {
+  background: #e8f3ec;
+  border-color: #cadfd3;
+  color: var(--ok);
+}
+.pill-warn {
+  background: #fbf0d8;
+  border-color: #ecdcb6;
+  color: var(--warn);
+}

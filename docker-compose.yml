@@ -1,0 +1,113 @@
+# 衣恋扫码出入库 · Java 版一键编排
+#
+# 用法：
+#   docker compose up -d --build     # 首次会构建镜像（约 3-5 分钟）
+#   open http://localhost:8081       # 前端；后端 Swagger: http://localhost:18081/swagger-ui.html
+#
+# 端口特意避开 3306/6379/5672 这些"人人都装"的默认值：本机若已有 MySQL，
+# 用默认端口会直接起不来，而报错信息只会说 "port is already allocated"，
+# 对不熟悉 Docker 的人非常不友好。
+name: yilian-java
+
+services:
+  mysql:
+    image: ${REGISTRY:-docker.m.daocloud.io}/library/mysql:8.0.36
+    container_name: yilian-java-mysql
+    command: >
+      --character-set-server=utf8mb4 --collation-server=utf8mb4_0900_ai_ci
+      --default-time-zone=+08:00 --max-connections=300
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root123}
+      MYSQL_DATABASE: yilian_clothing
+      TZ: Asia/Shanghai
+    ports:
+      - "${MYSQL_PORT:-13306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # 用 mysqladmin ping 而不是 mysql -e "select 1"：前者不占连接、不受初始化锁影响
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${DB_PASSWORD:-root123}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+
+  redis:
+    image: ${REGISTRY:-docker.m.daocloud.io}/library/redis:7.2-alpine
+    container_name: yilian-java-redis
+    command: ["redis-server", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "${REDIS_PORT:-16379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: ${REGISTRY:-docker.m.daocloud.io}/library/rabbitmq:3.13-management-alpine
+    container_name: yilian-java-mq
+    environment:
+      # guest 账号只允许 localhost 登录，容器间访问必须另建账号
+      RABBITMQ_DEFAULT_USER: ${MQ_USER:-yilian}
+      RABBITMQ_DEFAULT_PASS: ${MQ_PASSWORD:-yilian123}
+      TZ: Asia/Shanghai
+    ports:
+      - "${MQ_PORT:-15673}:5672"
+      - "${MQ_UI_PORT:-25672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  backend:
+    build:
+      context: ./backend
+      args:
+        REGISTRY: ${REGISTRY:-docker.m.daocloud.io}
+    container_name: yilian-java-api
+    environment:
+      TZ: Asia/Shanghai
+      DB_URL: jdbc:mysql://mysql:3306/yilian_clothing?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&rewriteBatchedStatements=true
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-root123}
+      REDIS_HOST: redis
+      MQ_HOST: rabbitmq
+      MQ_USER: ${MQ_USER:-yilian}
+      MQ_PASSWORD: ${MQ_PASSWORD:-yilian123}
+      # 演示数据开关：首次启动灌入 6 款 66 SKU，让界面一打开就有内容
+      APP_DEMO_ENABLED: "true"
+    ports:
+      - "${API_PORT:-18081}:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        REGISTRY: ${REGISTRY:-docker.m.daocloud.io}
+    container_name: yilian-java-web
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "${WEB_PORT:-8081}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  mysql-data:

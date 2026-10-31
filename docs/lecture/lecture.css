@@ -1,0 +1,251 @@
+/* ============================================================
+   深度讲义 · 打印样式（A4 / 中文排版 / 代码块 / 三层固定小节）
+   供 java.html 与 python.html 共用，导出 PDF 时由 Edge headless 渲染
+   ============================================================ */
+
+@page {
+  size: A4;
+  margin: 18mm 16mm 20mm 16mm;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+body {
+  margin: 0;
+  font-family: "Microsoft YaHei", "PingFang SC", "Source Han Sans SC", sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.75;
+  color: #1e2227;
+  background: #fff;
+}
+
+/* ---------------- 封面 ---------------- */
+.cover {
+  height: 245mm;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 6mm;
+  page-break-after: always;
+}
+.cover .kicker {
+  font-size: 10pt;
+  letter-spacing: .35em;
+  color: #b4453a;
+  margin-bottom: 14mm;
+}
+.cover h1 {
+  font-size: 34pt;
+  line-height: 1.25;
+  margin: 0 0 6mm;
+  letter-spacing: .04em;
+  font-weight: 700;
+}
+.cover h2 {
+  font-size: 14pt;
+  font-weight: 400;
+  color: #5a6472;
+  margin: 0 0 18mm;
+  line-height: 1.6;
+}
+.cover .meta {
+  border-top: 2px solid #1e2227;
+  padding-top: 6mm;
+  font-size: 9.5pt;
+  color: #4b5563;
+  line-height: 2;
+}
+.cover .meta b { color: #1e2227; font-weight: 600; }
+.cover .stamp {
+  margin-top: 12mm;
+  font-size: 9pt;
+  color: #8a929c;
+}
+
+/* ---------------- 目录 ---------------- */
+.toc { page-break-after: always; }
+.toc h2 {
+  font-size: 18pt;
+  border-bottom: 2px solid #1e2227;
+  padding-bottom: 3mm;
+  margin: 0 0 8mm;
+}
+.toc ol { list-style: none; padding: 0; margin: 0; counter-reset: toc; }
+.toc li {
+  counter-increment: toc;
+  display: flex;
+  align-items: baseline;
+  gap: 4mm;
+  padding: 2.4mm 0;
+  border-bottom: 1px dotted #cfd5dc;
+  font-size: 11pt;
+}
+.toc li::before {
+  content: "第 " counter(toc) " 章";
+  flex: 0 0 22mm;
+  color: #b4453a;
+  font-size: 8.5pt;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+.toc li .t { flex: 0 0 auto; }
+.toc li span { color: #6b7480; font-size: 9pt; }
+
+/* ---------------- 章节 ---------------- */
+section.chapter { page-break-before: always; }
+section.chapter > h2 {
+  font-size: 19pt;
+  margin: 0 0 3mm;
+  letter-spacing: .02em;
+}
+section.chapter > .lede {
+  font-size: 10pt;
+  color: #5a6472;
+  border-left: 3px solid #b4453a;
+  padding-left: 4mm;
+  margin: 0 0 8mm;
+}
+
+h3 {
+  font-size: 13pt;
+  margin: 9mm 0 3mm;
+  padding-bottom: 1.5mm;
+  border-bottom: 1px solid #e2e6ea;
+}
+h4 {
+  font-size: 11pt;
+  margin: 6mm 0 2mm;
+  color: #2b3138;
+}
+h4::before { content: "▍"; color: #b4453a; margin-right: 1.5mm; }
+
+p { margin: 0 0 3mm; text-align: justify; }
+ul, ol { margin: 0 0 3.5mm; padding-left: 6mm; }
+li { margin-bottom: 1.2mm; }
+
+b, strong { font-weight: 600; }
+code {
+  font-family: "Cascadia Mono", Consolas, "Courier New", monospace;
+  font-size: .88em;
+  background: #f2f4f6;
+  padding: .3mm 1.2mm;
+  border-radius: 1.2mm;
+  color: #8a3128;
+}
+
+/* ---------------- 代码块 ---------------- */
+pre {
+  background: #fbfaf7;
+  border: 1px solid #e6e1d8;
+  border-left: 3px solid #2f6f6a;
+  border-radius: 1.5mm;
+  padding: 3mm 3.5mm;
+  margin: 3mm 0 4mm;
+  overflow: visible;
+  page-break-inside: avoid;
+}
+pre code {
+  background: none;
+  padding: 0;
+  color: #22262b;
+  font-size: 8.6pt;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+pre .cmt { color: #8a929c; }        /* 注释 */
+pre .kw  { color: #8a3128; }        /* 关键字 */
+pre .str { color: #2f6f6a; }        /* 字符串 */
+pre .hl  { background: #fff3cd; }   /* 高亮行 */
+
+/* ---------------- 三个固定小节 ---------------- */
+.box {
+  margin: 5mm 0;
+  padding: 3.5mm 4mm;
+  border-radius: 1.5mm;
+  page-break-inside: avoid;
+  font-size: 10pt;
+}
+.box h5 {
+  margin: 0 0 2mm;
+  font-size: 10.5pt;
+  letter-spacing: .05em;
+}
+.box p:last-child, .box ul:last-child { margin-bottom: 0; }
+
+.box.essence { background: #f2f8f7; border-left: 4px solid #2f6f6a; }
+.box.essence h5 { color: #2f6f6a; }
+
+.box.arch { background: #fdf8ef; border-left: 4px solid #b8862b; }
+.box.arch h5 { color: #96690f; }
+
+.box.qa { background: #fdf3f2; border-left: 4px solid #b4453a; }
+.box.qa h5 { color: #b4453a; }
+.box.qa .q { font-weight: 600; margin: 2.5mm 0 .8mm; }
+.box.qa .a { margin: 0 0 2mm; color: #3a4149; }
+.box.qa .q::before { content: "Q "; color: #b4453a; font-weight: 700; }
+.box.qa .a::before { content: "A "; color: #2f6f6a; font-weight: 700; }
+
+/* ---------------- 表格 ---------------- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 3mm 0 4.5mm;
+  font-size: 9.2pt;
+  page-break-inside: avoid;
+}
+th, td { border: 1px solid #dde2e7; padding: 1.8mm 2.2mm; text-align: left; vertical-align: top; }
+th { background: #f4f6f8; font-weight: 600; }
+td.num { text-align: right; font-family: "Cascadia Mono", Consolas, monospace; }
+
+/* ---------------- 图 ---------------- */
+figure {
+  margin: 4mm 0 5mm;
+  page-break-inside: avoid;
+  text-align: center;
+}
+figure svg { max-width: 100%; height: auto; }
+figcaption {
+  font-size: 8.8pt;
+  color: #6b7480;
+  margin-top: 2mm;
+  text-align: center;
+}
+
+/* ---------------- 其他 ---------------- */
+.note {
+  font-size: 9.2pt;
+  color: #5a6472;
+  background: #f7f8fa;
+  border: 1px dashed #d5dbe1;
+  padding: 2.5mm 3mm;
+  border-radius: 1.5mm;
+  margin: 3mm 0;
+}
+.tag {
+  display: inline-block;
+  font-size: 8pt;
+  padding: .3mm 1.8mm;
+  border-radius: 1mm;
+  background: #eef1f4;
+  color: #4b5563;
+  margin-right: 1.5mm;
+}
+.tag.pass { background: #e7f4ef; color: #256d5b; }
+.tag.fail { background: #fbe9e7; color: #a03a2c; }
+.evidence {
+  font-size: 9pt;
+  color: #4b5563;
+  border-left: 2px solid #cfd5dc;
+  padding-left: 3mm;
+  margin: 2mm 0 3.5mm;
+}
+.footer-note {
+  margin-top: 8mm;
+  padding-top: 3mm;
+  border-top: 1px solid #e2e6ea;
+  font-size: 8.6pt;
+  color: #8a929c;
+}

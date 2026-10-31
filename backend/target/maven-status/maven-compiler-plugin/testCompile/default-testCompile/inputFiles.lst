@@ -1,0 +1,6 @@
+/proj/backend/src/test/java/com/yilian/clothing/domain/service/BarcodeParserTest.java
+/proj/backend/src/test/java/com/yilian/clothing/domain/service/PricingServiceTest.java
+/proj/backend/src/test/java/com/yilian/clothing/domain/service/StockMatrixBuilderTest.java
+/proj/backend/src/test/java/com/yilian/clothing/integration/ConcurrencyIT.java
+/proj/backend/src/test/java/com/yilian/clothing/integration/IntegrationTestSupport.java
+/proj/backend/src/test/java/com/yilian/clothing/integration/PermissionIT.java
