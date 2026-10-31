@@ -1,26 +1,25 @@
-<div align="center">
+<h1 align="center">衣恋女装 · 扫码出入库系统（Java 版）</h1>
 
-# 衣恋女装 · 扫码出入库系统（Java 版）
+<p align="center"><b>扫一下，就知道货在哪；两个人同时扫，账也不会错。</b></p>
 
-**扫一下，就知道货在哪；两个人同时扫，账也不会错。**
+<p align="center">面向云南临沧「衣恋时尚女装」（2 家门店 / 3–5 人 / 500–2000 件库存）的轻量进销存系统。<br/>
+正面解决三个真实痛点：<b>并发扫码互相覆盖导致超卖</b>、<b>纸质账本月底对不上</b>、<b>断网就无法开单</b>。</p>
 
-面向云南临沧「衣恋时尚女装」（2 家门店 / 3–5 人 / 500–2000 件库存）的轻量进销存系统。
-正面解决三个真实痛点：**并发扫码互相覆盖导致超卖**、**纸质账本月底对不上**、**断网就无法开单**。
+<p align="center">
+  <img src="https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white" alt="Java">
+  <img src="https://img.shields.io/badge/Spring%20Boot-3.3.5-6DB33F?logo=springboot&logoColor=white" alt="Spring Boot">
+  <img src="https://img.shields.io/badge/Architecture-DDD%20%2F%204--Layer-8A2BE2" alt="DDD">
+  <img src="https://img.shields.io/badge/Vue-3.5-4FC08D?logo=vuedotjs&logoColor=white" alt="Vue">
+  <img src="https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white" alt="Vite">
+  <img src="https://img.shields.io/badge/MySQL-8.0.36-4479A1?logo=mysql&logoColor=white" alt="MySQL">
+  <img src="https://img.shields.io/badge/Redis-7.2-DC382D?logo=redis&logoColor=white" alt="Redis">
+  <img src="https://img.shields.io/badge/RabbitMQ-3.13-FF6600?logo=rabbitmq&logoColor=white" alt="RabbitMQ">
+  <img src="https://img.shields.io/badge/Docker%20Compose-一键启动-2496ED?logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/tests-27%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/REST%20API-48%20endpoints-005571" alt="API">
+  <img src="https://img.shields.io/badge/需求覆盖-76%20题-blue" alt="Docs">
+</p>
 
-![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=openjdk&logoColor=white)
-![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.5-6DB33F?logo=springboot&logoColor=white)
-![DDD](https://img.shields.io/badge/Architecture-DDD%20%2F%204--Layer-8A2BE2)
-![Vue](https://img.shields.io/badge/Vue-3.5-4FC08D?logo=vuedotjs&logoColor=white)
-![Vite](https://img.shields.io/badge/Vite-6-646CFF?logo=vite&logoColor=white)
-![MySQL](https://img.shields.io/badge/MySQL-8.0.36-4479A1?logo=mysql&logoColor=white)
-![Redis](https://img.shields.io/badge/Redis-7.2-DC382D?logo=redis&logoColor=white)
-![RabbitMQ](https://img.shields.io/badge/RabbitMQ-3.13-FF6600?logo=rabbitmq&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker%20Compose-一键启动-2496ED?logo=docker&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-27%20passed-brightgreen)
-![API](https://img.shields.io/badge/REST%20API-48%20endpoints-005571)
-![Docs](https://img.shields.io/badge/需求覆盖-76%20题-blue)
-
-</div>
 
 ---
 
@@ -278,10 +277,12 @@ clothing/
 │   ├── pom.xml                          Spring Boot 3.3.5 / Java 21
 │   └── src/main/
 │       ├── java/com/yilian/clothing/
-│       │   ├── interfaces/              ① 接入层：Controller、DTO、异常处理器
+│       │   ├── interfaces/              ① 接入层：Controller、统一返回、异常处理
 │       │   │   ├── controller/          Auth / Catalog / Stock / Inbound / Sale
 │       │   │   │                        Ledger / Stocktake / Report / Sync / Meta / Aux
-│       │   │   └── dto/                 请求响应模型（带 @Schema 示例）
+│       │   │   │                        （请求响应 DTO 以 record 就近定义，带 @Schema 示例）
+│       │   │   ├── Result.java          统一返回包装
+│       │   │   └── GlobalExceptionHandler.java
 │       │   ├── application/             ② 应用层：用例编排 + 事务边界
 │       │   │   ├── service/             SaleAppService、InboundAppService、SyncAppService…
 │       │   │   └── job/                 定时任务（outbox 补偿、预警扫描）
@@ -358,7 +359,7 @@ BUILD SUCCESS   （2 分 45 秒）
 
 | 测试类 | 数量 | 覆盖内容 |
 |---|---|---|
-| `BarcodeParserTest` | 6 | EAN-13 纯码、`\|` 六段、`#` 旧码、非法日期丢弃、段数不足降级 |
+| `BarcodeParserTest` | 6 | EAN-13 纯码、竖线分隔六段码、`#` 旧码、非法日期丢弃、段数不足降级 |
 | `PricingServiceTest` | 7 | 7 行含多件的分摊精确性、无解残差暴露、纯函数性、毛利按实收算 |
 | `StockMatrixBuilderTest` | 6 | 尺码业务序、未知码排最后、颜色降序、同量按名稳定、零格丢弃、跨仓求和 |
 | `ConcurrencyIT` | 4 | 24 线程不丢更新、12 线程同令牌幂等、5 件库存 30 人抢不超卖、补货后闸门回写 |
@@ -400,9 +401,8 @@ DoD 逐项验收（含实测数字与命令）见 [`docs/DoD_Checklist.md`](docs
 
 ---
 
-<div align="center">
-
-**业务真源**：`衣恋-76 题需求答卷`（166 行 / 76 题）· **技术栈**：Spring Boot 3.3.5 + Java 21 + Vue 3 + MySQL 8 + Redis 7 + RabbitMQ 3.13
+<p align="center">
+<b>业务真源</b>：<code>衣恋-76 题需求答卷</code>（166 行 / 76 题）· <b>技术栈</b>：Spring Boot 3.3.5 + Java 21 + Vue 3 + MySQL 8 + Redis 7 + RabbitMQ 3.13<br/>
 本项目为学习 / 参赛作品，代码可自由参考，商业使用请联系作者。
+</p>
 
-</div>
